@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Idea Party</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<!-- ============ LANDING ============ -->
+<div id="landing" class="screen">
+  <div class="hero">
+    <div class="logo">🎉</div>
+    <h1>Idea Party</h1>
+    <p class="tag">One shared canvas. Point-to-point voice&nbsp;&amp;&nbsp;video.<br>A party agent that programs the board with you.</p>
+    <div class="card">
+      <label>Your name
+        <input id="nick" placeholder="Ada" maxlength="40" autocomplete="off">
+      </label>
+      <label>Party name
+        <input id="party-name" placeholder="Friday brainstorm" maxlength="80" autocomplete="off">
+      </label>
+      <button id="create-btn" class="primary">Start a party</button>
+      <div class="or">— or —</div>
+      <label>Party code
+        <input id="join-code" placeholder="a1b2c3d4" maxlength="8" autocomplete="off" autocapitalize="off" spellcheck="false">
+      </label>
+      <button id="join-btn">Join a party</button>
+      <p id="landing-err" class="err"></p>
+    </div>
+    <p class="fine">Voice/video is true peer-to-peer WebRTC — the server only introduces peers, media never touches it.<br>No accounts, no tracking. The board persists on the host.</p>
+  </div>
+</div>
+
+<!-- ============ PARTY ============ -->
+<div id="party" class="screen hidden">
+  <header id="topbar">
+    <div class="party-id" title="Copy invite link">
+      <span id="party-name-top">Party</span>
+      <code id="party-code-top"></code>
+    </div>
+    <div id="timer-pill" class="hidden">⏱ <span id="timer-text">0:00</span></div>
+    <div class="top-actions">
+      <button id="media-toggle" title="Camera & mic">🎙</button>
+      <button id="agent-btn" title="Party agent">🤖</button>
+      <button id="chat-toggle" title="Chat">💬<span id="chat-badge" class="hidden"></span></button>
+      <button id="leave-btn" title="Leave">✕</button>
+    </div>
+  </header>
+
+  <div id="filmstrip" class="hidden">
+    <div id="tiles"></div>
+    <div id="media-bar">
+      <button id="join-media" class="primary">Enable camera &amp; mic</button>
+      <button id="mic-btn" class="hidden">🎤</button>
+      <button id="cam-btn" class="hidden">📷</button>
+      <span id="secure-hint" class="hidden">⚠️ camera/mic on other devices need a secure origin — in Chrome open <code>chrome://flags</code> → “Insecure origins treated as secure” → add this URL.</span>
+    </div>
+  </div>
+
+  <div id="viewport">
+    <div id="board">
+      <svg id="stroke-layer"><g id="stroke-g" transform="translate(4000,4000)"></g></svg>
+      <div id="obj-layer"></div>
+      <div id="cursor-layer"></div>
+    </div>
+    <div id="vote-banner" class="hidden">🗳 Voting is open — tap +1 on your favorites</div>
+  </div>
+
+  <nav id="toolbar">
+    <button data-tool="pan" class="tool active" title="Pan / move">✥</button>
+    <button data-tool="sticky" class="tool" title="Sticky note">📝</button>
+    <button data-tool="pen" class="tool" title="Pen">✏️</button>
+    <button data-tool="label" class="tool" title="Label">🏷</button>
+    <button data-tool="eraser" class="tool" title="Eraser">🧽</button>
+    <div class="sep"></div>
+    <div id="palette"></div>
+  </nav>
+
+  <aside id="chat-panel" class="hidden">
+    <div class="chat-head">Party chat <button id="chat-close">✕</button></div>
+    <div id="chat-msgs"></div>
+    <form id="chat-form">
+      <input id="chat-input" placeholder="Message… (try “agent: add sticky …”)" maxlength="2000" autocomplete="off">
+      <button>➤</button>
+    </form>
+  </aside>
+
+  <div id="agent-modal" class="hidden">
+    <div class="agent-card">
+      <div class="chat-head">🤖 Party agent <button id="agent-close">✕</button></div>
+      <pre id="agent-help"></pre>
+      <form id="agent-form">
+        <input id="agent-input" placeholder="add sticky Ship it color green" maxlength="500" autocomplete="off">
+        <button class="primary">Run</button>
+      </form>
+      <p class="fine">The agent is deterministic and shared — everyone sees what it does.<br>Milton or any program can drive it too: <code>POST /api/parties/&lt;code&gt;/agent</code> with <code>{"instruction": "…"}</code>.</p>
+    </div>
+  </div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
