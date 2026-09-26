@@ -153,16 +153,23 @@ function send(msg) {
 }
 
 let reconnectTimer = null;
+let pingIv = null;
 function connect() {
   clearTimeout(reconnectTimer);
+  clearInterval(pingIv);
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/ws?party=${S.code}`);
   S.ws = ws;
-  ws.onopen = () => ws.send(JSON.stringify({ t: "hello", name: S.me.name }));
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ t: "hello", name: S.me.name }));
+    // heartbeat: proxies (Cloudflare et al.) drop sockets idle ~100s
+    pingIv = setInterval(() => send({ t: "ping" }), 30000);
+  };
   ws.onmessage = (e) => {
     try { handleMsg(JSON.parse(e.data)); } catch {}
   };
   ws.onclose = () => {
+    clearInterval(pingIv);
     if (!$("#party").classList.contains("hidden")) {
       reconnectTimer = setTimeout(connect, 2000);
     }
@@ -204,6 +211,8 @@ function handleMsg(m) {
     case "timer":
       showTimer(m.endsAt);
       break;
+    case "pong":
+      break; // heartbeat reply; the ping itself is what keeps the socket alive
     case "error":
       console.warn("server:", m.message);
       break;

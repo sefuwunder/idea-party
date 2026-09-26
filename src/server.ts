@@ -221,6 +221,11 @@ const server = Bun.serve({
       }
 
       switch (msg.t) {
+        case "ping": {
+          // heartbeat: keeps the socket alive through proxies with idle timeouts (e.g. Cloudflare ~100s)
+          try { ws.send(JSON.stringify({ t: "pong" })); } catch {}
+          break;
+        }
         case "signal": {
           // Pure routing: SDP/ICE go straight to the target peer. Media is P2P.
           if (typeof msg.to !== "string" || !msg.data) break;

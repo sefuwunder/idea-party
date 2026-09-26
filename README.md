@@ -63,6 +63,19 @@ Caveats:
 - **No TURN server is bundled.** Peers behind symmetric NATs may fail to connect directly; for those networks, run a coturn instance and point `RTC` at it in `public/app.js`.
 - **Camera/mic need a secure origin.** On `localhost` it just works. On LAN devices, use HTTPS or add the URL under `chrome://flags` → *Insecure origins treated as secure*.
 
+## Exposing it (Cloudflare Tunnel)
+
+Idea Party works well behind [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/): you get a real `https://` URL (so camera/mic works on any device with no flags), no port forwarding, and the public URL doubles as the invite link. WebRTC media stays peer-to-peer — only signaling rides the tunnel.
+
+```bash
+# quick share: random https://*.trycloudflare.com URL
+cloudflared tunnel --url http://localhost:3011
+```
+
+For a stable address, create a named tunnel and route DNS to it (`cloudflared tunnel create idea-party`, then `cloudflared tunnel route dns <id> party.example.com` with an ingress rule pointing at `http://localhost:3011`).
+
+Note: Cloudflare drops WebSocket connections idle for ~100s. The client sends a `{t:"ping"}` heartbeat every 30s (server replies `{t:"pong"}`) to keep the socket alive.
+
 ## API
 
 | Method | Path | What |
