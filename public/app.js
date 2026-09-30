@@ -571,7 +571,8 @@ function addChat(m) {
   } else {
     const isMe = m.from === S.me.id;
     const isAgent = m.from === "agent";
-    div.className = "msg" + (isMe ? " me" : "") + (isAgent ? " agent" : "");
+    const isSpark = m.from === "spark";
+    div.className = "msg" + (isMe ? " me" : "") + (isAgent ? " agent" : "") + (isSpark ? " spark" : "");
     const when = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     div.innerHTML = `<div class="who">${esc(m.name)} · ${when}</div><div class="bubble">${esc(m.text)}</div>`;
     if (!isMe && $("#chat-panel").classList.contains("hidden")) {
@@ -594,6 +595,63 @@ function toggleChat(open) {
     $("#chat-badge").classList.add("hidden");
     $("#chat-msgs").scrollTop = $("#chat-msgs").scrollHeight;
     setTimeout(() => $("#chat-input").focus(), 50);
+  }
+}
+
+/* ================= settings ================= */
+
+function toggleSettings(open) {
+  const m = $("#settings-modal");
+  const willOpen = open === undefined ? m.classList.contains("hidden") : open;
+  m.classList.toggle("hidden", !willOpen);
+  if (willOpen) loadKeys();
+}
+
+async function loadKeys() {
+  const box = $("#keys-list");
+  box.innerHTML = `<p class="fine">Loading…</p>`;
+  let keys = [];
+  try {
+    keys = (await (await fetch("/api/keys")).json()).keys || [];
+  } catch { box.innerHTML = `<p class="fine">Couldn't reach the server.</p>`; return; }
+  box.innerHTML = "";
+  for (const k of keys) {
+    const row = document.createElement("div");
+    row.className = "key-row";
+    row.innerHTML = `
+      <div class="key-name">${esc(k.name)} ${k.configured ? `<span class="key-ok">● set</span>` : `<span class="key-missing">○ not set</span>`}</div>
+      <div class="key-benefit">${esc(k.benefit)}</div>
+      ${k.configured ? `<div class="key-masked">${esc(k.masked)}</div>` : ""}
+      <form class="key-form">
+        <input type="password" placeholder="${k.configured ? "paste a new key to replace…" : "paste key…"}" autocomplete="off" spellcheck="false">
+        <button class="primary">Save</button>
+        ${k.configured ? `<button type="button" class="key-clear">Clear</button>` : ""}
+      </form>
+      <a class="key-signup" href="${esc(k.signup)}" target="_blank" rel="noopener">${esc(k.signupLabel)} ↗</a>`;
+    const form = row.querySelector(".key-form");
+    const input = row.querySelector("input");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const v = input.value.trim();
+      if (!v) return;
+      input.value = "";
+      const r = await fetch("/api/keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: k.id, value: v }),
+      });
+      if (r.ok) loadKeys(); else input.placeholder = "save failed — try again";
+    });
+    const clearBtn = row.querySelector(".key-clear");
+    if (clearBtn) clearBtn.addEventListener("click", async () => {
+      await fetch("/api/keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: k.id, value: "" }),
+      });
+      loadKeys();
+    });
+    box.appendChild(row);
   }
 }
 
@@ -832,6 +890,10 @@ $("#agent-form").addEventListener("submit", (e) => {
   toggleChat(true);
 });
 
+$("#settings-btn").addEventListener("click", () => toggleSettings());
+$("#settings-close").addEventListener("click", () => toggleSettings(false));
+$("#settings-modal").addEventListener("click", (e) => { if (e.target.id === "settings-modal") toggleSettings(false); });
+
 $("#media-toggle").addEventListener("click", () => {
   $("#filmstrip").classList.toggle("hidden");
 });
@@ -865,7 +927,7 @@ document.querySelector(".party-id").addEventListener("click", async () => {
 $("#leave-btn").addEventListener("click", () => { location.hash = "#/"; });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { toggleAgent(false); }
+  if (e.key === "Escape") { toggleAgent(false); toggleSettings(false); }
 });
 
 if (location.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {

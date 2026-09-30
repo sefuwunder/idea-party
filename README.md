@@ -54,6 +54,24 @@ curl -X POST http://localhost:3011/api/parties/<code>/agent \
 
 The agent's replies and board edits arrive as ordinary chat messages and canvas ops, so remote participants watch it work in real time.
 
+## ✨ Spark (Muse Spark participant)
+
+Mention `@spark` in chat and Muse Spark joins the party — it converses with everyone and programs the board through the same deterministic grammar as the party agent (add/move/edit/delete stickies and labels, arrange, cluster, votes, timers). It can't wipe the board: there is deliberately no clear tool.
+
+Spark needs a **Meta Model API key** (model `muse-spark-1.3` via `https://api.meta.ai/v1/chat/completions`):
+
+1. Grab a key at [dev.meta.ai](https://dev.meta.ai/) (there's a free-credit tier).
+2. In the party, tap ⚙️ **Settings** and paste it in — or set the `MODEL_API_KEY` environment variable (env wins for headless use).
+
+Keys are stored on the server only and shown back masked. Without a key, `@spark` just tells the room to add one.
+
+```
+@spark what do you think of these pricing ideas?
+@spark cluster the board by color
+@spark put a pink sticky that says "wild idea: subscriptions" top-left
+@spark start a vote on the top three
+```
+
 ## Voice & video
 
 True **point-to-point WebRTC mesh**: the server only routes SDP/ICE signaling to the intended peer — audio/video packets never touch it. Click *Enable camera & mic*, and each participant gets a filmstrip tile with mute/deafen, speaking indicators, and connection-quality dots.
@@ -84,6 +102,8 @@ Note: Cloudflare drops WebSocket connections idle for ~100s. The client sends a 
 | `GET` | `/api/parties/:code` | party info + peer count |
 | `GET` | `/api/parties/:code/canvas` | full op history (for replay) |
 | `POST` | `/api/parties/:code/agent` | `{"instruction": "…"}` → agent runs it |
+| `GET` | `/api/keys` | key status (masked, never the raw value) |
+| `POST` | `/api/keys` | `{"id": "MODEL_API_KEY", "value": "…"}` → save/clear a key |
 | `WS` | `/ws?code=…&name=…` | live hub: ops, chat, cursors, signaling, presence |
 
 WebSocket message types: `hello`, `welcome`, `op`, `chat`, `cursor`, `signal` (WebRTC), `media`, `timer`, `peer-join`, `peer-leave`.

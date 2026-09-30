@@ -8,6 +8,7 @@
 import { mkdirSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { parseAgentCommand, foldOps, type AgentOp, type CanvasObj } from "./agent";
+import { runSparkTurn, isSparkMention, SPARK_KEY_DEF, SPARK_KEY_ID, type SparkDeps } from "./spark";
 
 const PORT = Number(process.env.PORT || 3011);
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -22,7 +23,30 @@ CREATE TABLE IF NOT EXISTS canvas_ops(id INTEGER PRIMARY KEY, party TEXT NOT NUL
 CREATE TABLE IF NOT EXISTS chat(id INTEGER PRIMARY KEY, party TEXT NOT NULL, from_id TEXT NOT NULL, from_name TEXT NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_ops_party_seq ON canvas_ops(party, seq);
 CREATE INDEX IF NOT EXISTS idx_chat_party ON chat(party, id);
+CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 `);
+
+function getSetting(key: string): string {
+  const row = db.query("SELECT value FROM settings WHERE key=?").get(key) as any;
+  return (row?.value || "").toString();
+}
+function setSetting(key: string, value: string): void {
+  db.query("INSERT INTO settings(key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .run(key, value);
+}
+
+/** env first, then the Settings-screen store. */
+function resolveKey(id: string): string {
+  const env = (process.env[id] || "").trim();
+  if (env) return env;
+  return getSetting("key:" + id).trim();
+}
+function maskedKey(id: string): string {
+  const v = resolveKey(id);
+  if (!v) return "";
+  if (v.length <= 8) return "••••••••";
+  return v.slice(0, 4) + "••••" + v.slice(-4);
+}
 
 const PEER_COLORS = ["#f5b544", "#7dd3a8", "#8ab4ff", "#e58bb1", "#b9a7ff", "#ffb37d", "#6fd6d0", "#ff8a8a"];
 
@@ -93,12 +117,31 @@ function runAgent(code: string, raw: string, byName: string): { reply: string; s
   const res = parseAgentCommand(raw, objects);
   const seqs: number[] = [];
   for (const op of res.ops) seqs.push(applyAndBroadcastOp(code, "agent", op));
-  if (res.timer) {
-    timers.set(code, { endsAt: Date.now() + res.timer * 60000, minutes: res.timer, by: byName });
-    broadcast(code, { t: "timer", minutes: res.timer, endsAt: Date.now() + res.timer * 60000, by: byName });
-  }
+  if (res.timer) startTimer(code, res.timer, byName);
   postChat(code, "agent", "🤖 Agent", res.reply);
   return { reply: res.reply, seqs };
+}
+
+function startTimer(code: string, minutes: number, byName: string): void {
+  const endsAt = Date.now() + minutes * 60000;
+  timers.set(code, { endsAt, minutes, by: byName });
+  broadcast(code, { t: "timer", minutes, endsAt, by: byName });
+}
+
+/** Build the dependency bundle Spark needs for one party. */
+function sparkDeps(code: string): SparkDeps {
+  return {
+    resolveKey,
+    boardObjects: () => boardObjects(code),
+    recentChat: (limit: number) =>
+      (db.query("SELECT from_id AS `from`, from_name AS name, text, ts FROM chat WHERE party=? ORDER BY id DESC LIMIT ?")
+        .all(code, Math.max(1, Math.min(50, limit))) as any[]).reverse(),
+    partyName: () => getParty(code)?.name || "Idea party",
+    validOp,
+    applyOp: (op: AgentOp) => { applyAndBroadcastOp(code, "spark", op); },
+    setTimer: (minutes: number, by: string) => startTimer(code, minutes, by),
+    postChat: (fromId: string, fromName: string, text: string) => postChat(code, fromId, fromName, text),
+  };
 }
 
 const AGENT_PREFIX = /^\s*@?agent\s*[: ]/i;
@@ -170,6 +213,27 @@ const server = Bun.serve({
       if (!instruction.trim()) return Response.json({ error: "instruction required" }, { status: 400 });
       const { reply, seqs } = runAgent(m[1], instruction, "api");
       return Response.json({ ok: true, reply, seqs });
+    }
+
+    // --- keys (Settings screen; values never leave the server) ---
+    if (url.pathname === "/api/keys" && req.method === "GET") {
+      const v = resolveKey(SPARK_KEY_ID);
+      return Response.json({
+        keys: [{ ...SPARK_KEY_DEF, configured: !!v, masked: v ? maskedKey(SPARK_KEY_ID) : "" }],
+      });
+    }
+    if (url.pathname === "/api/keys" && req.method === "POST") {
+      let id = "", value = "";
+      try {
+        const body = await req.json();
+        id = body.id?.toString() || "";
+        value = body.value?.toString() || "";
+      } catch {}
+      if (id !== SPARK_KEY_ID) return Response.json({ error: "unknown key id" }, { status: 400 });
+      if (value && value.length > 500) return Response.json({ error: "key too long" }, { status: 400 });
+      setSetting("key:" + id, value.trim());
+      const v = resolveKey(id);
+      return Response.json({ ok: true, configured: !!v, masked: v ? maskedKey(id) : "" });
     }
 
     // --- SPA ---
@@ -253,6 +317,10 @@ const server = Bun.serve({
           if (!text.trim()) break;
           postChat(code, client.id, client.name, text);
           if (AGENT_PREFIX.test(text)) runAgent(code, text, client.name);
+          if (isSparkMention(text)) {
+            // async — Spark answers when the model responds; never blocks chat.
+            runSparkTurn(code, text, client.name, sparkDeps(code)).catch(() => {});
+          }
           break;
         }
         case "media": {

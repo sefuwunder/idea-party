@@ -191,11 +191,12 @@ button.primary { background: linear-gradient(135deg, #f5b544, #ff8a5c); border: 
 .msg.me { align-self: flex-end; text-align: right; }
 .msg.me .bubble { background: rgba(245,181,68,.22); border-radius: 14px 4px 14px 14px; }
 .msg.agent .bubble { background: rgba(185,167,255,.16); border: 1px solid rgba(185,167,255,.35); }
+.msg.spark .bubble { background: rgba(255,179,125,.14); border: 1px solid rgba(255,179,125,.4); }
 #chat-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid rgba(255,255,255,.08); }
 #chat-form input { flex: 1; background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; color: var(--ink); padding: 10px 12px; font-size: 15px; outline: none; }
 
-/* ---------- agent modal ---------- */
-#agent-modal {
+/* ---------- agent + settings modals ---------- */
+#agent-modal, #settings-modal {
   position: absolute; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center;
   background: rgba(8,5,14,.6); backdrop-filter: blur(4px); padding: 16px;
 }
@@ -211,6 +212,21 @@ button.primary { background: linear-gradient(135deg, #f5b544, #ff8a5c); border: 
 #agent-form { display: flex; gap: 8px; padding: 0 14px; }
 #agent-form input { flex: 1; background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; color: var(--ink); padding: 10px 12px; font-size: 15px; outline: none; }
 .agent-card .fine { padding: 0 14px; }
+
+/* ---------- settings keys ---------- */
+#keys-list { padding: 4px 14px 0; }
+.key-row { padding: 12px 0; border-top: 1px solid rgba(255,255,255,.08); }
+.key-row:first-child { border-top: none; }
+.key-name { font-weight: 600; font-size: 15px; }
+.key-ok { color: #7dd3a8; font-weight: 400; font-size: 13px; }
+.key-missing { color: var(--dim); font-weight: 400; font-size: 13px; }
+.key-benefit { color: var(--dim); font-size: 13.5px; margin: 4px 0; line-height: 1.45; }
+.key-masked { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; color: var(--dim); margin-bottom: 8px; }
+.key-form { display: flex; gap: 8px; margin-top: 8px; }
+.key-form input { flex: 1; background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; color: var(--ink); padding: 10px 12px; font-size: 14px; outline: none; min-width: 0; }
+.key-form button { border-radius: 10px; padding: 10px 14px; font-size: 14px; }
+.key-clear { background: rgba(255,255,255,.08); color: var(--ink); border: 1px solid rgba(255,255,255,.12); }
+.key-signup { display: inline-block; margin-top: 8px; font-size: 13px; color: var(--accent); }
 
 @media (max-width: 640px) {
   #toolbar { left: 8px; padding: 6px; }
