@@ -87,6 +87,21 @@ Keys are stored on the server only and shown back masked. Without a key, `@spark
 @spark start a vote on the top three
 ```
 
+## ✦ Gemini (Google Gemini participant)
+
+Mention `@gemini` in chat and Gemini joins the party — same deal as Spark: it converses and programs the board through the same deterministic grammar (add/move/edit/delete stickies and labels, arrange, cluster, votes, timers, widgets, Widget Lab drafts), so it can only do what the party agent can do. No clear/wipe tool, same as Spark. Both participants can be in the same party at once.
+
+Gemini needs a **Google Gemini API key** (model `gemini-3.8-flash` via Google's OpenAI-compatible endpoint `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`):
+
+1. Grab a key at [Google AI Studio](https://aistudio.google.com/) (there's a free tier).
+2. In the party, tap ⚙️ **Settings** and paste it in — or set the `GEMINI_API_KEY` environment variable (env wins for headless use).
+
+Keys are stored on the server only and shown back masked. Without a key, `@gemini` just tells the room to add one.
+
+```
+@gemini design a scoreboard widget for our game night
+```
+
 ## Voice & video
 
 True **point-to-point WebRTC mesh**: the server only routes SDP/ICE signaling to the intended peer — audio/video packets never touch it. Click *Enable camera & mic*, and each participant gets a filmstrip tile with mute/deafen, speaking indicators, and connection-quality dots.
@@ -118,7 +133,7 @@ Note: Cloudflare drops WebSocket connections idle for ~100s. The client sends a 
 | `GET` | `/api/parties/:code/canvas` | full op history (for replay) |
 | `POST` | `/api/parties/:code/agent` | `{"instruction": "…"}` → agent runs it |
 | `GET` | `/api/keys` | key status (masked, never the raw value) |
-| `POST` | `/api/keys` | `{"id": "MODEL_API_KEY", "value": "…"}` → save/clear a key |
+| `POST` | `/api/keys` | `{"id": "MODEL_API_KEY" or "GEMINI_API_KEY", "value": "…"}` → save/clear a key |
 | `WS` | `/ws?code=…&name=…` | live hub: ops, chat, cursors, signaling, presence |
 
 WebSocket message types: `hello`, `welcome`, `op`, `chat`, `cursor`, `signal` (WebRTC), `media`, `timer`, `peer-join`, `peer-leave`.

@@ -290,6 +290,7 @@ iframe.wcustom {
 .msg.me .bubble { background: rgba(245,181,68,.22); border-radius: 14px 4px 14px 14px; }
 .msg.agent .bubble { background: rgba(185,167,255,.16); border: 1px solid rgba(185,167,255,.35); }
 .msg.spark .bubble { background: rgba(255,179,125,.14); border: 1px solid rgba(255,179,125,.4); }
+.msg.gemini .bubble { background: rgba(125,178,255,.14); border: 1px solid rgba(125,178,255,.4); }
 #chat-form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid rgba(255,255,255,.08); }
 #chat-form input { flex: 1; background: rgba(0,0,0,.35); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; color: var(--ink); padding: 10px 12px; font-size: 15px; outline: none; }
 

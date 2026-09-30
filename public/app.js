@@ -692,8 +692,8 @@ function addChat(m) {
   } else {
     const isMe = m.from === S.me.id;
     const isAgent = m.from === "agent";
-    const isSpark = m.from === "spark";
-    div.className = "msg" + (isMe ? " me" : "") + (isAgent ? " agent" : "") + (isSpark ? " spark" : "");
+    const isGemini = m.from === "gemini";
+    div.className = "msg" + (isMe ? " me" : "") + (isAgent ? " agent" : "") + (isSpark ? " spark" : "") + (isGemini ? " gemini" : "");
     const when = new Date(m.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     div.innerHTML = `<div class="who">${esc(m.name)} · ${when}</div><div class="bubble">${esc(m.text)}</div>`;
     if (!isMe && $("#chat-panel").classList.contains("hidden")) {

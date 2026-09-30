@@ -9,6 +9,7 @@ import { mkdirSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { parseAgentCommand, foldOps, type AgentOp, type CanvasObj, type WidgetTypeAction } from "./agent";
 import { runSparkTurn, isSparkMention, SPARK_KEY_DEF, SPARK_KEY_ID, type SparkDeps } from "./spark";
+import { runGeminiTurn, isGeminiMention, GEMINI_KEY_DEF, GEMINI_KEY_ID } from "./gemini";
 import {
   type WidgetTypeSpec,
   validateWidgetType,
@@ -232,8 +233,8 @@ function startTimer(code: string, minutes: number, byName: string): void {
   broadcast(code, { t: "timer", minutes, endsAt, by: byName });
 }
 
-/** Build the dependency bundle Spark needs for one party. */
-function sparkDeps(code: string): SparkDeps {
+/** Build the dependency bundle a participant needs for one party. */
+function participantDeps(code: string): SparkDeps {
   return {
     resolveKey,
     boardObjects: () => boardObjects(code),
@@ -387,9 +388,15 @@ const server = Bun.serve({
 
     // --- keys (Settings screen; values never leave the server) ---
     if (url.pathname === "/api/keys" && req.method === "GET") {
-      const v = resolveKey(SPARK_KEY_ID);
+      const defs = [
+        { def: SPARK_KEY_DEF, id: SPARK_KEY_ID },
+        { def: GEMINI_KEY_DEF, id: GEMINI_KEY_ID },
+      ];
       return Response.json({
-        keys: [{ ...SPARK_KEY_DEF, configured: !!v, masked: v ? maskedKey(SPARK_KEY_ID) : "" }],
+        keys: defs.map(({ def, id }) => {
+          const v = resolveKey(id);
+          return { ...def, configured: !!v, masked: v ? maskedKey(id) : "" };
+        }),
       });
     }
     if (url.pathname === "/api/keys" && req.method === "POST") {
@@ -399,7 +406,8 @@ const server = Bun.serve({
         id = body.id?.toString() || "";
         value = body.value?.toString() || "";
       } catch {}
-      if (id !== SPARK_KEY_ID) return Response.json({ error: "unknown key id" }, { status: 400 });
+      if (id !== SPARK_KEY_ID && id !== GEMINI_KEY_ID)
+        return Response.json({ error: "unknown key id" }, { status: 400 });
       if (value && value.length > 500) return Response.json({ error: "key too long" }, { status: 400 });
       setSetting("key:" + id, value.trim());
       const v = resolveKey(id);
@@ -560,7 +568,11 @@ const server = Bun.serve({
           if (AGENT_PREFIX.test(text)) runAgent(code, text, client.name);
           if (isSparkMention(text)) {
             // async — Spark answers when the model responds; never blocks chat.
-            runSparkTurn(code, text, client.name, sparkDeps(code)).catch(() => {});
+            runSparkTurn(code, text, client.name, participantDeps(code)).catch(() => {});
+          }
+          if (isGeminiMention(text)) {
+            // async — Gemini answers when the model responds; never blocks chat.
+            runGeminiTurn(code, text, client.name, participantDeps(code)).catch(() => {});
           }
           break;
         }
