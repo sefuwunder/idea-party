@@ -16,6 +16,7 @@ Open the URL, type your name, and either **start a party** (you get an 8-charact
 ## The board
 
 - **Stickies** (📝), **labels** (🏷), and **freehand strokes** (✏️) with an eraser (🧽)
+- **Widgets**: polls (📊 — tap an option to vote, live bars and counts) and checklists (✅ — tap items to check them off)
 - Drag to move, double-click text to edit, palette to recolor
 - Pan (drag empty space / move tool), zoom (wheel / pinch)
 - Live peer cursors with name tags
@@ -33,6 +34,8 @@ The agent is deterministic and shared: everyone sees what it does. Two ways to d
 ```
 agent: add sticky Ship it color green at 400,200
 agent: add label Pricing
+agent: add widget poll Best date? | Oct 12 | Oct 19 | Nov 2
+agent: add widget checklist Setup | Chairs | Snacks | Music
 agent: move <id or words> to 100,200
 agent: delete <id or words>
 agent: color <id or words> pink
@@ -56,7 +59,7 @@ The agent's replies and board edits arrive as ordinary chat messages and canvas 
 
 ## ✨ Spark (Muse Spark participant)
 
-Mention `@spark` in chat and Muse Spark joins the party — it converses with everyone and programs the board through the same deterministic grammar as the party agent (add/move/edit/delete stickies and labels, arrange, cluster, votes, timers). It can't wipe the board: there is deliberately no clear tool.
+Mention `@spark` in chat and Muse Spark joins the party — it converses with everyone and programs the board through the same deterministic grammar as the party agent (add/move/edit/delete stickies and labels, arrange, cluster, votes, timers, poll and checklist widgets). It can't wipe the board: there is deliberately no clear tool.
 
 Spark needs a **Meta Model API key** (model `muse-spark-1.3` via `https://api.meta.ai/v1/chat/completions`):
 

@@ -3,9 +3,19 @@
 // for in-party chat and for the HTTP /api/parties/:code/agent endpoint, so
 // Milton (or any outside agent) programs the board through the same grammar.
 
+export interface PollOption {
+  label: string;
+  votes: number;
+}
+
+export interface ChecklistItem {
+  text: string;
+  done: boolean;
+}
+
 export interface CanvasObj {
   id: string;
-  type: "sticky" | "stroke" | "label";
+  type: "sticky" | "stroke" | "label" | "widget";
   x: number;
   y: number;
   text?: string;
@@ -13,9 +23,16 @@ export interface CanvasObj {
   points?: number[];
   w?: number;
   votes?: number;
+  /** widget kind — only when type === "widget" */
+  widget?: "poll" | "checklist";
+  /** widget payload */
+  data?: {
+    options?: PollOption[];
+    items?: ChecklistItem[];
+  };
 }
 
-export type OpKind = "add" | "move" | "edit" | "del" | "vote" | "clear" | "mode";
+export type OpKind = "add" | "move" | "edit" | "del" | "vote" | "toggle" | "clear" | "mode";
 
 export interface AgentOp {
   kind: OpKind;
@@ -35,6 +52,8 @@ export const HELP =
   "I program the board. Try:\n" +
   "• agent add sticky <text> [color pink] [at 100,200]\n" +
   "• agent add label <text> [at 100,200]\n" +
+  "• agent add widget poll <question> | <opt1> | <opt2> [| …]\n" +
+  "• agent add widget checklist <title> | <item1> | <item2> [| …]\n" +
   "• agent move <id or words> to <x>,<y>\n" +
   "• agent delete <id or words> · agent color <id or words> <color>\n" +
   "• agent arrange · agent cluster · agent count\n" +
@@ -77,9 +96,9 @@ function stickies(objects: Record<string, CanvasObj>): CanvasObj[] {
     .sort((a, b) => (a.id < b.id ? -1 : 1));
 }
 
-/** Deterministic cascade spot for a new sticky. */
+/** Deterministic cascade spot for a new sticky/widget. */
 function cascadeSpot(objects: Record<string, CanvasObj>): { x: number; y: number } {
-  const n = stickies(objects).length;
+  const n = Object.values(objects).filter((o) => o.type === "sticky" || o.type === "widget").length;
   return { x: 80 + (n % 5) * 250, y: 90 + Math.floor(n / 5) * 210 };
 }
 
@@ -140,6 +159,42 @@ export function parseAgentCommand(
       text: rest.slice(0, 200),
     };
     return { reply: `Labeled “${obj.text}”.`, ops: [{ kind: "add", obj }] };
+  }
+
+  // ---- add widget (poll / checklist) ----
+  // agent add widget poll <question> | <opt1> | <opt2> [| ...]
+  // agent add widget checklist <title> | <item1> | <item2> [| ...]
+  m = cmd.match(/^add\s+widget\s+(poll|checklist)\s+([\s\S]+)$/i);
+  if (m) {
+    const kind = m[1].toLowerCase() as "poll" | "checklist";
+    let rest = m[2];
+    const atM = rest.match(AT_RE);
+    rest = rest.replace(AT_RE, "");
+    const parts = rest.split("|").map((s) => s.trim()).filter((s) => s.length > 0);
+    const title = (parts.shift() || "").slice(0, 120);
+    const entries = parts.map((s) => s.slice(0, 60));
+    if (!title)
+      return { reply: `Give the ${kind} a title: \`agent add widget ${kind} <title> | <a> | <b>\`.`, ops: [] };
+    if (entries.length < 2)
+      return { reply: `A ${kind} needs at least 2 entries separated by |: \`agent add widget ${kind} ${title} | <a> | <b>\`.`, ops: [] };
+    if (entries.length > 8)
+      return { reply: `Keep it to 8 entries max — trim the list and try again.`, ops: [] };
+    const spot = atM
+      ? { x: clampNum(+atM[1], -2000, 4000), y: clampNum(+atM[2], -2000, 4000) }
+      : cascadeSpot(objects);
+    const obj: CanvasObj = {
+      id: newId("w"),
+      type: "widget",
+      widget: kind,
+      x: spot.x,
+      y: spot.y,
+      text: title,
+      data: kind === "poll"
+        ? { options: entries.map((label) => ({ label, votes: 0 })) }
+        : { items: entries.map((text) => ({ text, done: false })) },
+    };
+    const noun = kind === "poll" ? "poll" : "checklist";
+    return { reply: `Added ${noun} “${title}” with ${entries.length} entries — tap to ${kind === "poll" ? "vote" : "check things off"}.`, ops: [{ kind: "add", obj }] };
   }
 
   // ---- move ----
@@ -243,9 +298,13 @@ export function parseAgentCommand(
     const ss = stickies(objects);
     const labels = Object.values(objects).filter((o) => o.type === "label").length;
     const strokes = Object.values(objects).filter((o) => o.type === "stroke").length;
+    const widgets = Object.values(objects).filter((o) => o.type === "widget").length;
     const votes = ss.reduce((a, s) => a + (s.votes || 0), 0);
+    const widgetBits = widgets
+      ? `, ${widgets} widget${widgets === 1 ? "" : "s"}`
+      : "";
     return {
-      reply: `${ss.length} stickies, ${labels} labels, ${strokes} strokes, ${votes} votes on the board.`,
+      reply: `${ss.length} stickies, ${labels} labels, ${strokes} strokes${widgetBits}, ${votes} votes on the board.`,
       ops: [],
     };
   }
@@ -260,7 +319,7 @@ export function parseAgentCommand(
 export function applyOp(objects: Record<string, CanvasObj>, op: AgentOp): void {
   switch (op.kind) {
     case "add":
-      if (op.obj && op.obj.id && (op.obj.type === "sticky" || op.obj.type === "stroke" || op.obj.type === "label"))
+      if (op.obj && op.obj.id && (op.obj.type === "sticky" || op.obj.type === "stroke" || op.obj.type === "label" || op.obj.type === "widget"))
         objects[op.obj.id] = { votes: 0, ...op.obj };
       break;
     case "move": {
@@ -281,7 +340,21 @@ export function applyOp(objects: Record<string, CanvasObj>, op: AgentOp): void {
       break;
     case "vote": {
       const o = objects[op.id];
-      if (o && o.type === "sticky") o.votes = (o.votes || 0) + 1;
+      if (!o) break;
+      if (o.type === "widget" && o.widget === "poll" && Number.isInteger(op.option)) {
+        const opts = o.data?.options;
+        if (opts && opts[op.option]) opts[op.option].votes = (opts[op.option].votes || 0) + 1;
+      } else if (o.type === "sticky" && op.option === undefined) {
+        o.votes = (o.votes || 0) + 1;
+      }
+      break;
+    }
+    case "toggle": {
+      const o = objects[op.id];
+      const items = o && o.type === "widget" && o.widget === "checklist" ? o.data?.items : null;
+      if (items && Number.isInteger(op.index) && items[op.index]) {
+        items[op.index].done = !items[op.index].done;
+      }
       break;
     }
     case "clear":

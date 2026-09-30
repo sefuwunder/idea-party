@@ -125,4 +125,49 @@ describe("server", () => {
     expect(err.message).toBe("invalid op");
     a.ws.close();
   });
+
+  test("widget ops round-trip: add, vote, toggle", async () => {
+    const a = await wsJoin("Ada");
+    const b = await wsJoin("Bo");
+    const widget = {
+      id: "wtest1", type: "widget", widget: "poll", x: 10, y: 20, text: "Lunch?",
+      data: { options: [{ label: "Pizza", votes: 0 }, { label: "Sushi", votes: 0 }] },
+    };
+    a.ws.send(JSON.stringify({ t: "op", op: { kind: "add", obj: widget } }));
+    const added = await waitFor(b.msgs, (m) => m.t === "op" && m.op?.kind === "add" && m.op?.obj?.id === "wtest1");
+    expect(added.op.obj.widget).toBe("poll");
+
+    b.ws.send(JSON.stringify({ t: "op", op: { kind: "vote", id: "wtest1", option: 1 } }));
+    const voted = await waitFor(a.msgs, (m) => m.t === "op" && m.op?.kind === "vote" && m.op?.id === "wtest1");
+    expect(voted.op.option).toBe(1);
+
+    const badWidget = { ...widget, id: "wbad", widget: "quiz", data: {} };
+    a.ws.send(JSON.stringify({ t: "op", op: { kind: "add", obj: badWidget } }));
+    const err = await waitFor(a.msgs, (m) => m.t === "error");
+    expect(err.message).toBe("invalid op");
+
+    const badVote = { kind: "vote", id: "wtest1", option: 99 };
+    b.ws.send(JSON.stringify({ t: "op", op: badVote }));
+    const err2 = await waitFor(b.msgs, (m) => m.t === "error");
+    expect(err2.message).toBe("invalid op");
+
+    a.ws.close();
+    b.ws.close();
+  });
+
+  test("checklist toggle op round-trips", async () => {
+    const a = await wsJoin("Ada");
+    const b = await wsJoin("Bo");
+    const widget = {
+      id: "wtest2", type: "widget", widget: "checklist", x: 0, y: 0, text: "Setup",
+      data: { items: [{ text: "Chairs", done: false }, { text: "Snacks", done: false }] },
+    };
+    a.ws.send(JSON.stringify({ t: "op", op: { kind: "add", obj: widget } }));
+    await waitFor(b.msgs, (m) => m.t === "op" && m.op?.obj?.id === "wtest2");
+    b.ws.send(JSON.stringify({ t: "op", op: { kind: "toggle", id: "wtest2", index: 0 } }));
+    const toggled = await waitFor(a.msgs, (m) => m.t === "op" && m.op?.kind === "toggle");
+    expect(toggled.op.index).toBe(0);
+    a.ws.close();
+    b.ws.close();
+  });
 });

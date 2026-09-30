@@ -348,6 +348,8 @@ function renderObj(id) {
     });
     const txt = elx.querySelector(".txt");
     txt.addEventListener("dblclick", (e) => { e.stopPropagation(); editText(id, txt); });
+  } else if (o.type === "widget") {
+    renderWidget(elx, id, o);
   } else { // label
     elx.className = "label-obj" + (S.selected === id ? " selected" : "");
     elx.innerHTML = `<div class="txt">${esc(o.text || "")}</div>`;
@@ -356,6 +358,48 @@ function renderObj(id) {
   }
   elx.addEventListener("pointerdown", (e) => onObjPointerDown(e, id));
   $("#obj-layer").appendChild(elx);
+}
+
+function renderWidget(elx, id, o) {
+  elx.className = "widget " + (o.widget || "poll") + (S.selected === id ? " selected" : "");
+  const title = `<div class="w-title">${esc(o.text || "")}</div>`;
+  if (o.widget === "checklist") {
+    const items = (o.data && o.data.items) || [];
+    const done = items.filter((x) => x.done).length;
+    elx.innerHTML = title + `<div class="w-kind">✅ checklist · ${done}/${items.length} done</div>` +
+      items.map((it, i) =>
+        `<button class="w-item${it.done ? " done" : ""}" data-i="${i}">` +
+        `<span class="w-box">${it.done ? "✓" : ""}</span>` +
+        `<span class="w-item-label">${esc(it.text)}</span></button>`
+      ).join("");
+    elx.querySelectorAll(".w-item").forEach((btn) => {
+      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        send({ t: "op", op: { kind: "toggle", id, index: +btn.dataset.i } });
+      });
+    });
+  } else { // poll (default)
+    const opts = (o.data && o.data.options) || [];
+    const total = opts.reduce((a, x) => a + (x.votes || 0), 0);
+    elx.innerHTML = title + `<div class="w-kind">📊 poll · ${total} vote${total === 1 ? "" : "s"} — tap to vote</div>` +
+      opts.map((op, i) => {
+        const pct = total ? Math.round((100 * (op.votes || 0)) / total) : 0;
+        return `<button class="w-opt" data-i="${i}">` +
+          `<span class="w-bar" style="width:${pct}%"></span>` +
+          `<span class="w-opt-label">${esc(op.label)}</span>` +
+          `<span class="w-opt-n">${op.votes || 0}</span></button>`;
+      }).join("");
+    elx.querySelectorAll(".w-opt").forEach((btn) => {
+      btn.addEventListener("pointerdown", (e) => e.stopPropagation());
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        send({ t: "op", op: { kind: "vote", id, option: +btn.dataset.i } });
+      });
+    });
+  }
+  const ttl = elx.querySelector(".w-title");
+  ttl.addEventListener("dblclick", (e) => { e.stopPropagation(); editText(id, ttl); });
 }
 
 function renderStroke(o) {
@@ -660,6 +704,8 @@ const AGENT_HELP =
 `I program the board. Try:
 • agent add sticky <text> [color pink] [at 100,200]
 • agent add label <text> [at 100,200]
+• agent add widget poll <question> | <opt1> | <opt2>
+• agent add widget checklist <title> | <item1> | <item2>
 • agent move <id or words> to <x>,<y>
 • agent delete <id or words> · agent color <id or words> <color>
 • agent arrange · agent cluster · agent count

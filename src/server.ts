@@ -146,19 +146,42 @@ function sparkDeps(code: string): SparkDeps {
 
 const AGENT_PREFIX = /^\s*@?agent\s*[: ]/i;
 
+function validWidget(obj: any): boolean {
+  if (!["poll", "checklist"].includes(obj.widget)) return false;
+  if (typeof obj.text !== "string" || !obj.text.trim() || obj.text.length > 120) return false;
+  const data = obj.data;
+  if (!data || typeof data !== "object") return false;
+  if (obj.widget === "poll") {
+    if (!Array.isArray(data.options) || data.options.length < 2 || data.options.length > 8) return false;
+    return data.options.every((o: any) =>
+      o && typeof o.label === "string" && o.label.trim().length > 0 && o.label.length <= 60 &&
+      typeof o.votes === "number" && o.votes >= 0);
+  }
+  if (!Array.isArray(data.items) || data.items.length < 2 || data.items.length > 8) return false;
+  return data.items.every((it: any) =>
+    it && typeof it.text === "string" && it.text.trim().length > 0 && it.text.length <= 60 &&
+    typeof it.done === "boolean");
+}
+
 function validOp(op: any): op is AgentOp {
   if (!op || typeof op !== "object") return false;
   switch (op.kind) {
     case "add":
       return !!op.obj && typeof op.obj.id === "string" &&
-        ["sticky", "stroke", "label"].includes(op.obj.type);
+        ["sticky", "stroke", "label", "widget"].includes(op.obj.type) &&
+        (op.obj.type !== "widget" || validWidget(op.obj));
     case "move":
       return typeof op.id === "string" && Number.isFinite(op.x) && Number.isFinite(op.y);
     case "edit":
       return typeof op.id === "string" && !!op.patch && typeof op.patch === "object";
     case "del":
-    case "vote":
       return typeof op.id === "string";
+    case "vote":
+      return typeof op.id === "string" &&
+        (op.option === undefined || (Number.isInteger(op.option) && op.option >= 0 && op.option < 8));
+    case "toggle":
+      return typeof op.id === "string" &&
+        Number.isInteger(op.index) && op.index >= 0 && op.index < 8;
     case "clear":
       return true;
     case "mode":

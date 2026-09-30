@@ -173,3 +173,98 @@ describe("fold", () => {
     expect(findMatch("nope", board())).toBeNull();
   });
 });
+
+describe("widgets", () => {
+  test("add widget poll parses question and options", () => {
+    const r = parseAgentCommand("add widget poll Best date? | Oct 12 | Oct 19 | Nov 2", {});
+    expect(r.ops).toHaveLength(1);
+    const obj = (r.ops[0] as any).obj;
+    expect(obj.type).toBe("widget");
+    expect(obj.widget).toBe("poll");
+    expect(obj.text).toBe("Best date?");
+    expect(obj.data.options).toEqual([
+      { label: "Oct 12", votes: 0 },
+      { label: "Oct 19", votes: 0 },
+      { label: "Nov 2", votes: 0 },
+    ]);
+    expect(r.reply).toContain("Best date?");
+  });
+
+  test("add widget checklist parses title and items", () => {
+    const r = parseAgentCommand("agent: add widget checklist Setup | Chairs | Snacks", {});
+    const obj = (r.ops[0] as any).obj;
+    expect(obj.widget).toBe("checklist");
+    expect(obj.data.items).toEqual([
+      { text: "Chairs", done: false },
+      { text: "Snacks", done: false },
+    ]);
+  });
+
+  test("add widget validates entries", () => {
+    expect(parseAgentCommand("add widget poll Lonely?", {}).ops).toHaveLength(0);
+    expect(parseAgentCommand("add widget poll Q? | only-one", {}).reply).toMatch(/at least 2/);
+    expect(parseAgentCommand("add widget poll Q? | " + Array(9).fill("x").join(" | "), {}).reply).toMatch(/8 entries max/);
+    expect(parseAgentCommand("add widget poll", {}).reply).toMatch(/didn't understand/);
+  });
+
+  test("add widget supports at x,y", () => {
+    const r = parseAgentCommand("add widget poll Q? | a | b at 400,300", {});
+    const obj = (r.ops[0] as any).obj;
+    expect(obj.x).toBe(400);
+    expect(obj.y).toBe(300);
+    expect(obj.data.options.map((o: any) => o.label)).toEqual(["a", "b"]);
+  });
+
+  test("vote op with option increments poll option votes", () => {
+    const objs = foldOps([
+      { kind: "add", obj: { id: "w1", type: "widget", widget: "poll", x: 0, y: 0, text: "Q?", data: { options: [{ label: "a", votes: 0 }, { label: "b", votes: 0 }] } } },
+    ]);
+    applyOp(objs, { kind: "vote", id: "w1", option: 1 });
+    applyOp(objs, { kind: "vote", id: "w1", option: 1 });
+    applyOp(objs, { kind: "vote", id: "w1", option: 0 });
+    expect(objs.w1.data!.options![0].votes).toBe(1);
+    expect(objs.w1.data!.options![1].votes).toBe(2);
+    // out-of-range option is a safe no-op
+    applyOp(objs, { kind: "vote", id: "w1", option: 7 });
+    expect(objs.w1.data!.options![1].votes).toBe(2);
+  });
+
+  test("vote op with option does not touch sticky votes", () => {
+    const objs = board();
+    applyOp(objs, { kind: "vote", id: "s1", option: 0 });
+    expect(objs.s1.votes).toBe(2); // unchanged
+    applyOp(objs, { kind: "vote", id: "s1" });
+    expect(objs.s1.votes).toBe(3);
+  });
+
+  test("toggle op flips checklist items", () => {
+    const objs = foldOps([
+      { kind: "add", obj: { id: "w2", type: "widget", widget: "checklist", x: 0, y: 0, text: "T", data: { items: [{ text: "a", done: false }, { text: "b", done: true }] } } },
+    ]);
+    applyOp(objs, { kind: "toggle", id: "w2", index: 0 });
+    expect(objs.w2.data!.items![0].done).toBe(true);
+    applyOp(objs, { kind: "toggle", id: "w2", index: 0 });
+    expect(objs.w2.data!.items![0].done).toBe(false);
+    // bad index / wrong target are safe no-ops
+    applyOp(objs, { kind: "toggle", id: "w2", index: 9 });
+    applyOp(objs, { kind: "toggle", id: "nope", index: 0 });
+    expect(objs.w2.data!.items![1].done).toBe(true);
+  });
+
+  test("count includes widgets", () => {
+    const objs = foldOps([
+      { kind: "add", obj: { id: "w1", type: "widget", widget: "poll", x: 0, y: 0, text: "Q?", data: { options: [{ label: "a", votes: 0 }, { label: "b", votes: 0 }] } } },
+    ]);
+    const r = parseAgentCommand("agent: count", objs);
+    expect(r.reply).toContain("1 widget");
+  });
+
+  test("findMatch finds widgets by title", () => {
+    const objs = foldOps([
+      { kind: "add", obj: { id: "w9", type: "widget", widget: "poll", x: 0, y: 0, text: "Lunch plans?", data: { options: [{ label: "a", votes: 0 }, { label: "b", votes: 0 }] } } },
+    ]);
+    expect(findMatch("lunch", objs)!.id).toBe("w9");
+    const r = parseAgentCommand("agent: delete lunch plans?", objs);
+    expect(r.ops[0]).toMatchObject({ kind: "del", id: "w9" });
+  });
+});

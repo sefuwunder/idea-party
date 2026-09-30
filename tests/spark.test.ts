@@ -288,3 +288,79 @@ describe("runSparkTurn", () => {
     _resetBusyForTests();
   });
 });
+
+describe("spark widget tools", () => {
+  function wboard(): Record<string, CanvasObj> {
+    return {
+      w1: {
+        id: "w1", type: "widget", widget: "poll", x: 0, y: 0, text: "Lunch?",
+        data: { options: [{ label: "Pizza", votes: 2 }, { label: "Sushi", votes: 0 }] },
+      },
+      w2: {
+        id: "w2", type: "widget", widget: "checklist", x: 0, y: 0, text: "Setup",
+        data: { items: [{ text: "Chairs", done: false }, { text: "Snacks", done: true }] },
+      },
+    };
+  }
+
+  test("create_widget compiles to a widget add op", () => {
+    const r = toolCallToOps(
+      tc("create_widget", { kind: "poll", title: "Retro?", items: ["Keep", "Drop", "Try"], x: 10, y: 20 }),
+      board()
+    );
+    expect(r.ops).toHaveLength(1);
+    const obj = (r.ops[0] as any).obj;
+    expect(obj.type).toBe("widget");
+    expect(obj.widget).toBe("poll");
+    expect(obj.text).toBe("Retro?");
+    expect(obj.data.options.map((o: any) => o.label)).toEqual(["Keep", "Drop", "Try"]);
+    expect(obj.x).toBe(10);
+    expect(r.result).toContain("Retro?");
+  });
+
+  test("create_widget validates kind and items", () => {
+    expect(toolCallToOps(tc("create_widget", { kind: "quiz", title: "t", items: ["a", "b"] }), board()).result).toMatch(/error/i);
+    expect(toolCallToOps(tc("create_widget", { kind: "poll", title: "t", items: ["only"] }), board()).result).toMatch(/at least 2/);
+    expect(toolCallToOps(tc("create_widget", { kind: "poll", title: "", items: ["a", "b"] }), board()).result).toMatch(/error/i);
+  });
+
+  test("create_widget sanitizes pipe characters", () => {
+    const r = toolCallToOps(
+      tc("create_widget", { kind: "checklist", title: "a|b", items: ["x|y", "z"] }),
+      board()
+    );
+    const obj = (r.ops[0] as any).obj;
+    expect(obj.text).toBe("a/b");
+    expect(obj.data.items[0].text).toBe("x/y");
+  });
+
+  test("vote_poll emits a 0-based vote op", () => {
+    const r = toolCallToOps(tc("vote_poll", { query: "Lunch", option: 2 }), wboard());
+    expect(r.ops).toEqual([{ kind: "vote", id: "w1", option: 1 }]);
+    expect(r.result).toContain("Sushi");
+  });
+
+  test("vote_poll validates target and range", () => {
+    expect(toolCallToOps(tc("vote_poll", { query: "Lunch", option: 5 }), wboard()).result).toMatch(/only has 2/);
+    expect(toolCallToOps(tc("vote_poll", { query: "Setup", option: 1 }), wboard()).result).toMatch(/not a poll/);
+    expect(toolCallToOps(tc("vote_poll", { query: "Lunch", option: 0 }), wboard()).result).toMatch(/error/i);
+    expect(toolCallToOps(tc("vote_poll", { query: "nope", option: 1 }), wboard()).result).toContain("Couldn't find");
+  });
+
+  test("toggle_checklist_item emits a toggle op", () => {
+    const r = toolCallToOps(tc("toggle_checklist_item", { query: "Setup", item: 1 }), wboard());
+    expect(r.ops).toEqual([{ kind: "toggle", id: "w2", index: 0 }]);
+    expect(r.result).toContain("Chairs");
+    expect(toolCallToOps(tc("toggle_checklist_item", { query: "Lunch", item: 1 }), wboard()).result).toMatch(/not a checklist/);
+  });
+
+  test("board summary shows numbered poll options and checklist state", () => {
+    const h = harness();
+    h.objects = { ...h.objects, ...wboard() };
+    const ctx = buildContextBlock(h.deps);
+    expect(ctx).toContain('1. "Pizza" — 2 votes');
+    expect(ctx).toContain('2. "Sushi" — 0 votes');
+    expect(ctx).toContain("[ ] Chairs");
+    expect(ctx).toContain("[x] Snacks");
+  });
+});

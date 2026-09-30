@@ -109,6 +109,21 @@ export const SPARK_TOOLS = [
   fn("set_timer", "Start a shared countdown timer for the party.", {
     minutes: { type: "number", description: "1 to 120 minutes." },
   }, ["minutes"]),
+  fn("create_widget", "Add a poll or checklist widget to the board. Polls let everyone tap options to vote; checklists have tappable checkboxes.", {
+    kind: { type: "string", enum: ["poll", "checklist"] },
+    title: { type: "string", description: "Poll question or checklist title." },
+    items: { type: "array", items: { type: "string" }, description: "Poll options or checklist entries, 2 to 8." },
+    x: { type: "number", description: "Board x coordinate. Omit for an automatic spot." },
+    y: { type: "number", description: "Board y coordinate. Omit for an automatic spot." },
+  }, ["kind", "title", "items"]),
+  fn("vote_poll", "Cast a vote for a numbered poll option (option numbers are shown in the board state).", {
+    query: { type: "string", description: "Poll title words or widget id." },
+    option: { type: "number", description: "1-based option number as shown in the board state." },
+  }, ["query", "option"]),
+  fn("toggle_checklist_item", "Check/uncheck a numbered checklist item (item numbers are shown in the board state).", {
+    query: { type: "string", description: "Checklist title words or widget id." },
+    item: { type: "number", description: "1-based item number as shown in the board state." },
+  }, ["query", "item"]),
 ];
 
 const TOOL_TO_GRAMMAR: Record<string, (a: any) => string | { error: string }> = {
@@ -151,6 +166,18 @@ const TOOL_TO_GRAMMAR: Record<string, (a: any) => string | { error: string }> = 
     if (!Number.isFinite(a.minutes)) return { error: "set_timer needs minutes as a number." };
     return `timer ${a.minutes}`;
   },
+  create_widget: (a) => {
+    const kind = String(a.kind || "").toLowerCase();
+    if (kind !== "poll" && kind !== "checklist") return { error: "create_widget kind must be poll or checklist." };
+    const title = (a.title || "").toString().trim().replace(/\|/g, "/");
+    const items = Array.isArray(a.items) ? a.items.map((s: any) => s.toString().trim().replace(/\|/g, "/")).filter(Boolean) : [];
+    if (!title) return { error: "create_widget needs a title." };
+    if (items.length < 2) return { error: "create_widget needs at least 2 items." };
+    if (items.length > 8) return { error: "create_widget takes at most 8 items." };
+    let s = `add widget ${kind} ${title} | ${items.join(" | ")}`;
+    if (Number.isFinite(a.x) && Number.isFinite(a.y)) s += ` at ${a.x},${a.y}`;
+    return s;
+  },
 };
 
 export interface ToolCall {
@@ -173,6 +200,29 @@ export function toolCallToOps(
   } catch {
     return { ops: [], result: "Error: arguments were not valid JSON." };
   }
+
+  // Poll votes and checklist toggles: direct ops (validated server-side).
+  // Handled before the grammar table — these tools have no grammar form.
+  if (tc.function.name === "vote_poll" || tc.function.name === "toggle_checklist_item") {
+    const isVote = tc.function.name === "vote_poll";
+    const q = (args.query || "").toString().trim();
+    const n = isVote ? args.option : args.item;
+    if (!q) return { ops: [], result: `Error: ${tc.function.name} needs a query.` };
+    if (!Number.isInteger(n) || n < 1) return { ops: [], result: `Error: ${tc.function.name} needs a 1-based ${isVote ? "option" : "item"} number.` };
+    const hit = findMatch(q, objects);
+    if (!hit) return { ops: [], result: `Couldn't find "${q}" on the board.` };
+    const o = objects[hit.id];
+    if (o.type !== "widget" || o.widget !== (isVote ? "poll" : "checklist"))
+      return { ops: [], result: `Error: "${(o.text || "").slice(0, 40)}" is not a ${isVote ? "poll" : "checklist"}.` };
+    const list = isVote ? o.data?.options || [] : o.data?.items || [];
+    if (n > list.length) return { ops: [], result: `Error: that ${isVote ? "poll" : "checklist"} only has ${list.length} ${isVote ? "options" : "items"}.` };
+    const op: AgentOp = isVote
+      ? { kind: "vote", id: hit.id, option: n - 1 }
+      : { kind: "toggle", id: hit.id, index: n - 1 };
+    const label = isVote ? (list[n - 1] as any).label : (list[n - 1] as any).text;
+    return { ops: [op], result: isVote ? `Voted for "${label}".` : `Toggled "${label}".` };
+  }
+
   const compile = TOOL_TO_GRAMMAR[tc.function.name];
   if (!compile) return { ops: [], result: `Error: unknown tool "${tc.function.name}".` };
 
@@ -209,7 +259,7 @@ export function toolCallToOps(
 // Context + API
 // ---------------------------------------------------------------------------
 
-const SYSTEM_PROMPT = `You are Spark, a lively participant in an Idea Party — a shared brainstorming canvas with voice and video chat. You see the recent party chat and the current board. You can reply conversationally AND you can program the board by calling tools (add stickies and labels, move/recolor/edit/delete items, arrange, cluster, run votes, set timers).
+const SYSTEM_PROMPT = `You are Spark, a lively participant in an Idea Party — a shared brainstorming canvas with voice and video chat. You see the recent party chat and the current board. You can reply conversationally AND you can program the board by calling tools (add stickies and labels, move/recolor/edit/delete items, arrange, cluster, run votes, set timers, create poll and checklist widgets, vote in polls, toggle checklist items).
 
 Guidelines:
 - Be concise and playful; you're at a party, not writing an essay. A sentence or two unless asked for more.
@@ -225,7 +275,18 @@ function boardSummary(objects: Record<string, CanvasObj>): string {
     .map((o) => {
       const text = (o.text || "").replace(/\n/g, " ").slice(0, 100);
       const votes = o.type === "sticky" && o.votes ? ` (${o.votes} votes)` : "";
-      return `${o.id}: ${o.type}${o.color ? " " + o.color : ""} "${text}" @ ${o.x},${o.y}${votes}`;
+      let extra = "";
+      if (o.type === "widget" && o.widget === "poll") {
+        extra = "\n" + (o.data?.options || [])
+          .map((op, i) => `  ${i + 1}. "${op.label}" — ${op.votes} vote${op.votes === 1 ? "" : "s"}`)
+          .join("\n");
+      } else if (o.type === "widget" && o.widget === "checklist") {
+        extra = "\n" + (o.data?.items || [])
+          .map((it, i) => `  ${i + 1}. [${it.done ? "x" : " "}] ${it.text}`)
+          .join("\n");
+      }
+      const kind = o.type === "widget" ? `widget ${o.widget}` : o.type;
+      return `${o.id}: ${kind}${o.color ? " " + o.color : ""} "${text}" @ ${o.x},${o.y}${votes}${extra}`;
     })
     .join("\n");
 }

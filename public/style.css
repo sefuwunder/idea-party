@@ -139,6 +139,42 @@ button.primary { background: linear-gradient(135deg, #f5b544, #ff8a5c); border: 
 .label-obj .txt { outline: none; }
 .label-obj .txt[contenteditable="true"] { background: rgba(255,255,255,.12); border-radius: 8px; cursor: text; }
 
+/* ---------- widgets (poll / checklist) ---------- */
+.widget {
+  position: absolute; width: 244px; padding: 12px 12px 14px; border-radius: 16px;
+  background: linear-gradient(160deg, #2d2442, #211a33);
+  border: 1px solid rgba(185,167,255,.35);
+  box-shadow: 0 10px 24px rgba(0,0,0,.45); cursor: grab; user-select: none; color: var(--ink);
+}
+.widget.selected { box-shadow: 0 0 0 3px var(--accent), 0 10px 24px rgba(0,0,0,.45); }
+.widget .w-title { font-weight: 700; font-size: 15.5px; line-height: 1.35; word-break: break-word; outline: none; }
+.widget .w-title[contenteditable="true"] { cursor: text; background: rgba(255,255,255,.12); border-radius: 6px; }
+.widget .w-kind { font-size: 11.5px; color: var(--dim); margin: 3px 0 8px; }
+.widget .w-opt {
+  position: relative; display: flex; align-items: center; gap: 8px; width: 100%;
+  margin: 6px 0; padding: 9px 10px; border-radius: 10px; overflow: hidden;
+  border: 1px solid rgba(255,255,255,.14); background: rgba(255,255,255,.05);
+  color: var(--ink); font-size: 14px; text-align: left; cursor: pointer;
+}
+.widget .w-opt:active { transform: scale(.98); }
+.widget .w-bar { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(245,181,68,.28); pointer-events: none; }
+.widget .w-opt-label { position: relative; flex: 1; word-break: break-word; }
+.widget .w-opt-n { position: relative; font-variant-numeric: tabular-nums; color: var(--dim); font-size: 13px; }
+.widget .w-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; margin: 3px 0; padding: 8px 10px;
+  border-radius: 10px; border: none; background: transparent;
+  color: var(--ink); font-size: 14px; text-align: left; cursor: pointer;
+}
+.widget .w-item:active { transform: scale(.98); }
+.widget .w-box {
+  flex: none; width: 20px; height: 20px; border-radius: 6px;
+  border: 1.5px solid rgba(255,255,255,.35); display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: #7dd3a8;
+}
+.widget .w-item.done .w-box { border-color: #7dd3a8; background: rgba(125,211,168,.15); }
+.widget .w-item.done .w-item-label { text-decoration: line-through; color: var(--dim); }
+.widget .w-item-label { word-break: break-word; }
+
 .remote-cursor {
   position: absolute; left: 0; top: 0; pointer-events: none; z-index: 50;
   transition: transform .12s linear; will-change: transform;
