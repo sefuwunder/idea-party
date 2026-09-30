@@ -3,6 +3,8 @@
 // for in-party chat and for the HTTP /api/parties/:code/agent endpoint, so
 // Milton (or any outside agent) programs the board through the same grammar.
 
+import { type WidgetTypeSpec, validateWidgetName } from "./widgets";
+
 export interface PollOption {
   label: string;
   votes: number;
@@ -23,12 +25,13 @@ export interface CanvasObj {
   points?: number[];
   w?: number;
   votes?: number;
-  /** widget kind — only when type === "widget" */
-  widget?: "poll" | "checklist";
+  /** widget kind — only when type === "widget"; "poll"/"checklist" are built-in, anything else is a custom WidgetTypeSpec name */
+  widget?: string;
   /** widget payload */
   data?: {
     options?: PollOption[];
     items?: ChecklistItem[];
+    [k: string]: any;
   };
 }
 
@@ -44,6 +47,18 @@ export interface AgentResult {
   ops: AgentOp[];
   /** minutes — when set, the server broadcasts a countdown timer */
   timer?: number;
+  /** widget-type lifecycle action — handled by the server, not a canvas op */
+  widgetType?: WidgetTypeAction;
+}
+
+/** A widget-type lifecycle request from the agent grammar. */
+export interface WidgetTypeAction {
+  action: "propose" | "publish" | "unpublish";
+  name: string;
+  /** for propose: human description used to scaffold the draft */
+  description?: string;
+  /** for propose: pre-built spec (the server fills in anything missing) */
+  spec?: WidgetTypeSpec;
 }
 
 export const COLORS = ["yellow", "pink", "blue", "green", "purple", "orange"] as const;
@@ -54,6 +69,9 @@ export const HELP =
   "• agent add label <text> [at 100,200]\n" +
   "• agent add widget poll <question> | <opt1> | <opt2> [| …]\n" +
   "• agent add widget checklist <title> | <item1> | <item2> [| …]\n" +
+  "• agent add widget <type> <title> [| values…]  (custom types)\n" +
+  "• agent build widget <name> \"<description>\"  (scaffold a new widget type)\n" +
+  "• agent widgets · agent publish widget <name>\n" +
   "• agent move <id or words> to <x>,<y>\n" +
   "• agent delete <id or words> · agent color <id or words> <color>\n" +
   "• agent arrange · agent cluster · agent count\n" +
@@ -115,7 +133,8 @@ function stripAgentPrefix(input: string): string {
 
 export function parseAgentCommand(
   input: string,
-  objects: Record<string, CanvasObj>
+  objects: Record<string, CanvasObj>,
+  wtypes: WidgetTypeSpec[] = []
 ): AgentResult {
   const cmd = stripAgentPrefix(input);
   const low = cmd.toLowerCase();
@@ -195,6 +214,89 @@ export function parseAgentCommand(
     };
     const noun = kind === "poll" ? "poll" : "checklist";
     return { reply: `Added ${noun} “${title}” with ${entries.length} entries — tap to ${kind === "poll" ? "vote" : "check things off"}.`, ops: [{ kind: "add", obj }] };
+  }
+
+  // ---- add widget (custom type) ----
+  // agent add widget <type> <title> [| <field values…>] [at x,y]
+  m = cmd.match(/^add\s+widget\s+([a-z0-9-]+)\s*([\s\S]*)$/i);
+  if (m) {
+    const kind = m[1].toLowerCase();
+    if (kind === "poll" || kind === "checklist")
+      return { reply: `Usage: \`agent add widget ${kind} <title> | <a> | <b>\`.`, ops: [] };
+    const type = wtypes.find((t) => t.name === kind);
+    if (!type)
+      return { reply: `No widget type “${kind}”. Say \`agent widgets\` to see what's available, or \`agent build widget ${kind} "<description>"\` to start one.`, ops: [] };
+    if (type.status !== "active")
+      return { reply: `“${type.title}” is still a draft — publish it first (\`agent publish widget ${kind}\`) or preview it in the 🧪 Widget Lab.`, ops: [] };
+    let rest = m[2] || "";
+    const atM = rest.match(AT_RE);
+    rest = rest.replace(AT_RE, "");
+    const parts = rest.split("|").map((s) => s.trim()).filter((s) => s.length > 0);
+    const title = (parts.shift() || type.title).slice(0, 120);
+    const entries = parts.map((s) => s.slice(0, 120));
+    const spot = atM
+      ? { x: clampNum(+atM[1], -2000, 4000), y: clampNum(+atM[2], -2000, 4000) }
+      : cascadeSpot(objects);
+    const data: Record<string, any> = { ...(type.example || {}) };
+    type.fields.forEach((f, i) => {
+      if (entries[i] !== undefined) data[f.key] = entries[i];
+    });
+    const obj: CanvasObj = {
+      id: newId("w"),
+      type: "widget",
+      widget: kind,
+      x: spot.x,
+      y: spot.y,
+      text: title,
+      data,
+    };
+    return { reply: `Added ${type.title} “${title}”.`, ops: [{ kind: "add", obj }] };
+  }
+
+  // ---- build widget: scaffold a new widget type (draft) ----
+  // agent build widget <name> "<description>"
+  m = cmd.match(/^build\s+widget\s+([a-z0-9-]+)\s*([\s\S]*)$/i);
+  if (m) {
+    const name = m[1].toLowerCase();
+    let description = (m[2] || "").trim().replace(/^["“”]/, "").replace(/["“”]$/, "").trim();
+    const nameErr = validateWidgetName(name);
+    if (nameErr) return { reply: `Can't use that name: ${nameErr}`, ops: [] };
+    if (wtypes.some((t) => t.name === name))
+      return { reply: `There's already a widget type called “${name}”. Say \`agent widgets\` to see them all.`, ops: [] };
+    if (!description) description = "a custom mini app";
+    return {
+      reply: `Scaffolding “${name}” — I'll draft the starter code, then you (or @spark) can shape it in the 🧪 Widget Lab.`,
+      ops: [],
+      widgetType: { action: "propose", name, description },
+    };
+  }
+
+  // ---- widgets: list widget types ----
+  if (/^widgets$/.test(low)) {
+    if (!wtypes.length)
+      return { reply: "No custom widget types yet. Try `agent build widget scoreboard \"two teams, +1 buttons\"`.", ops: [] };
+    const lines = wtypes.map((t) =>
+      `• ${t.name} — ${t.title} [${t.status}]${t.description ? ": " + t.description.slice(0, 80) : ""}`
+    );
+    return { reply: "Widget types:\n" + lines.join("\n"), ops: [] };
+  }
+
+  // ---- publish / unpublish widget ----
+  m = cmd.match(/^(publish|unpublish)\s+widget\s+([a-z0-9-]+)\s*$/i);
+  if (m) {
+    const name = m[2].toLowerCase();
+    const type = wtypes.find((t) => t.name === name);
+    if (!type) return { reply: `No widget type “${name}”.`, ops: [] };
+    const toActive = m[1].toLowerCase() === "publish";
+    if (toActive && type.status === "active") return { reply: `“${type.title}” is already live.`, ops: [] };
+    if (!toActive && type.status === "draft") return { reply: `“${type.title}” is already a draft.`, ops: [] };
+    return {
+      reply: toActive
+        ? `Publishing “${type.title}” — it'll be addable with \`agent add widget ${name} <title>\`.`
+        : `Unpublished “${type.title}” — back to draft.`,
+      ops: [],
+      widgetType: { action: toActive ? "publish" : "unpublish", name },
+    };
   }
 
   // ---- move ----
@@ -332,6 +434,12 @@ export function applyOp(objects: Record<string, CanvasObj>, op: AgentOp): void {
       if (o && op.patch && typeof op.patch === "object") {
         if (typeof op.patch.text === "string") o.text = op.patch.text.slice(0, 500);
         if (typeof op.patch.color === "string") o.color = op.patch.color;
+        // Custom widget state: full data replacement (validated server-side).
+        // Built-ins (poll/checklist) use vote/toggle ops instead.
+        if (o.type === "widget" && o.widget !== "poll" && o.widget !== "checklist" &&
+            op.patch.data && typeof op.patch.data === "object" && !Array.isArray(op.patch.data)) {
+          o.data = op.patch.data;
+        }
       }
       break;
     }

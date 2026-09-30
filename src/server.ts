@@ -7,8 +7,16 @@
 
 import { mkdirSync } from "node:fs";
 import { Database } from "bun:sqlite";
-import { parseAgentCommand, foldOps, type AgentOp, type CanvasObj } from "./agent";
+import { parseAgentCommand, foldOps, type AgentOp, type CanvasObj, type WidgetTypeAction } from "./agent";
 import { runSparkTurn, isSparkMention, SPARK_KEY_DEF, SPARK_KEY_ID, type SparkDeps } from "./spark";
+import {
+  type WidgetTypeSpec,
+  validateWidgetType,
+  validateWidgetName,
+  scaffoldWidgetType,
+  isPlainData,
+  dataSizeOk,
+} from "./widgets";
 
 const PORT = Number(process.env.PORT || 3011);
 const ROOT = new URL("..", import.meta.url).pathname;
@@ -24,6 +32,15 @@ CREATE TABLE IF NOT EXISTS chat(id INTEGER PRIMARY KEY, party TEXT NOT NULL, fro
 CREATE INDEX IF NOT EXISTS idx_ops_party_seq ON canvas_ops(party, seq);
 CREATE INDEX IF NOT EXISTS idx_chat_party ON chat(party, id);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS widget_types(
+  party TEXT NOT NULL, name TEXT NOT NULL,
+  title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  fields TEXT NOT NULL DEFAULT '[]', example TEXT NOT NULL DEFAULT '{}',
+  style TEXT NOT NULL DEFAULT '', script TEXT NOT NULL DEFAULT '',
+  height INTEGER NOT NULL DEFAULT 240, version INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
+  PRIMARY KEY (party, name));
 `);
 
 function getSetting(key: string): string {
@@ -85,6 +102,90 @@ function boardObjects(code: string): Record<string, CanvasObj> {
   return foldOps(rows.map((r) => JSON.parse(r.op) as AgentOp));
 }
 
+// ---------------------------------------------------------------------------
+// Widget-type registry (custom mini apps). One registry per party.
+// ---------------------------------------------------------------------------
+
+function rowToWidgetType(r: any): WidgetTypeSpec {
+  return {
+    name: r.name,
+    title: r.title,
+    description: r.description || "",
+    status: r.status === "active" ? "active" : "draft",
+    fields: JSON.parse(r.fields || "[]"),
+    example: JSON.parse(r.example || "{}"),
+    style: r.style || "",
+    script: r.script || "",
+    height: r.height || 240,
+    version: r.version || 1,
+    created_by: r.created_by || "",
+    updated_at: r.updated_at || 0,
+  };
+}
+
+function getWidgetTypes(code: string): WidgetTypeSpec[] {
+  const rows = db.query("SELECT * FROM widget_types WHERE party=? ORDER BY name").all(code) as any[];
+  return rows.map(rowToWidgetType);
+}
+
+function getWidgetType(code: string, name: string): WidgetTypeSpec | null {
+  const r = db.query("SELECT * FROM widget_types WHERE party=? AND name=?").get(code, name) as any;
+  return r ? rowToWidgetType(r) : null;
+}
+
+function activeWidgetNames(code: string): Set<string> {
+  return new Set(getWidgetTypes(code).filter((t) => t.status === "active").map((t) => t.name));
+}
+
+/** Insert or replace a widget type. Returns an error string, or null on success. */
+function saveWidgetType(code: string, t: WidgetTypeSpec): string | null {
+  const err = validateWidgetType(t);
+  if (err) return err;
+  db.query(
+    `INSERT INTO widget_types(party,name,title,description,status,fields,example,style,script,height,version,created_by,updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+     ON CONFLICT(party,name) DO UPDATE SET
+       title=excluded.title, description=excluded.description, status=excluded.status,
+       fields=excluded.fields, example=excluded.example, style=excluded.style,
+       script=excluded.script, height=excluded.height, version=excluded.version,
+       created_by=excluded.created_by, updated_at=excluded.updated_at`
+  ).run(
+    code, t.name, t.title, t.description, t.status,
+    JSON.stringify(t.fields), JSON.stringify(t.example),
+    t.style, t.script, t.height, t.version, t.created_by, t.updated_at
+  );
+  broadcast(code, { t: "widget-types", types: getWidgetTypes(code) });
+  return null;
+}
+
+function setWidgetTypeStatus(code: string, name: string, status: "draft" | "active"): string | null {
+  const t = getWidgetType(code, name);
+  if (!t) return `No widget type "${name}".`;
+  if (t.status === status) return null;
+  t.status = status;
+  t.updated_at = Date.now();
+  return saveWidgetType(code, t);
+}
+
+/** Perform an agent-grammar widget-type action. Returns the chat reply. */
+function handleWidgetTypeAction(code: string, a: WidgetTypeAction, byName: string): string {
+  if (a.action === "propose") {
+    if (getWidgetType(code, a.name)) return `There's already a widget type called "${a.name}".`;
+    const spec = scaffoldWidgetType(a.name, a.description || "", byName);
+    const err = saveWidgetType(code, spec);
+    if (err) return `Couldn't scaffold "${a.name}": ${err}`;
+    return `Drafted "${spec.title}" — open the 🧪 Widget Lab to preview it, or ask @spark to write the real code. Publish it when it's ready.`;
+  }
+  if (a.action === "publish" || a.action === "unpublish") {
+    const err = setWidgetTypeStatus(code, a.name, a.action === "publish" ? "active" : "draft");
+    if (err) return err;
+    return a.action === "publish"
+      ? `“${a.name}” is live — add it with \`agent add widget ${a.name} <title>\`.`
+      : `“${a.name}” is back to draft.`;
+  }
+  return "Unknown widget action.";
+}
+
 function broadcast(code: string, msg: any, except?: Client) {
   const set = partyClients.get(code);
   if (!set) return;
@@ -114,12 +215,15 @@ function applyAndBroadcastOp(code: string, clientId: string, op: AgentOp): numbe
 /** Run the Party Agent: parse -> persist ops -> broadcast -> chat reply. */
 function runAgent(code: string, raw: string, byName: string): { reply: string; seqs: number[] } {
   const objects = boardObjects(code);
-  const res = parseAgentCommand(raw, objects);
+  const wtypes = getWidgetTypes(code);
+  const res = parseAgentCommand(raw, objects, wtypes);
   const seqs: number[] = [];
   for (const op of res.ops) seqs.push(applyAndBroadcastOp(code, "agent", op));
   if (res.timer) startTimer(code, res.timer, byName);
-  postChat(code, "agent", "🤖 Agent", res.reply);
-  return { reply: res.reply, seqs };
+  let reply = res.reply;
+  if (res.widgetType) reply = handleWidgetTypeAction(code, res.widgetType, byName);
+  postChat(code, "agent", "🤖 Agent", reply);
+  return { reply, seqs };
 }
 
 function startTimer(code: string, minutes: number, byName: string): void {
@@ -137,43 +241,86 @@ function sparkDeps(code: string): SparkDeps {
       (db.query("SELECT from_id AS `from`, from_name AS name, text, ts FROM chat WHERE party=? ORDER BY id DESC LIMIT ?")
         .all(code, Math.max(1, Math.min(50, limit))) as any[]).reverse(),
     partyName: () => getParty(code)?.name || "Idea party",
-    validOp,
+    validOp: (op: any) => validOp(op),
     applyOp: (op: AgentOp) => { applyAndBroadcastOp(code, "spark", op); },
     setTimer: (minutes: number, by: string) => startTimer(code, minutes, by),
     postChat: (fromId: string, fromName: string, text: string) => postChat(code, fromId, fromName, text),
+    widgetTypes: () => getWidgetTypes(code),
+    saveWidgetType: (t: WidgetTypeSpec, _by: string) => saveWidgetType(code, t),
+    updateWidgetType: (name: string, patch: Partial<WidgetTypeSpec>) => {
+      const cur = getWidgetType(code, name);
+      if (!cur) return `No widget type "${name}".`;
+      if (cur.status !== "draft") return `“${cur.title}” is published — unpublish it before editing.`;
+      const next: WidgetTypeSpec = {
+        ...cur,
+        title: typeof patch.title === "string" ? patch.title : cur.title,
+        description: typeof patch.description === "string" ? patch.description : cur.description,
+        fields: Array.isArray(patch.fields) ? patch.fields : cur.fields,
+        example: patch.example !== undefined ? patch.example : cur.example,
+        style: typeof patch.style === "string" ? patch.style : cur.style,
+        script: typeof patch.script === "string" ? patch.script : cur.script,
+        height: Number.isInteger(patch.height) ? patch.height as number : cur.height,
+        version: cur.version + 1,
+        updated_at: Date.now(),
+      };
+      return saveWidgetType(code, next);
+    },
+    setWidgetTypeStatus: (name: string, status: "draft" | "active") => setWidgetTypeStatus(code, name, status),
   };
 }
 
 const AGENT_PREFIX = /^\s*@?agent\s*[: ]/i;
 
-function validWidget(obj: any): boolean {
-  if (!["poll", "checklist"].includes(obj.widget)) return false;
-  if (typeof obj.text !== "string" || !obj.text.trim() || obj.text.length > 120) return false;
-  const data = obj.data;
-  if (!data || typeof data !== "object") return false;
-  if (obj.widget === "poll") {
-    if (!Array.isArray(data.options) || data.options.length < 2 || data.options.length > 8) return false;
-    return data.options.every((o: any) =>
-      o && typeof o.label === "string" && o.label.trim().length > 0 && o.label.length <= 60 &&
-      typeof o.votes === "number" && o.votes >= 0);
+function validWidget(obj: any, activeWidgets: Set<string>): boolean {
+  if (obj.widget === "poll" || obj.widget === "checklist") {
+    if (typeof obj.text !== "string" || !obj.text.trim() || obj.text.length > 120) return false;
+    const data = obj.data;
+    if (!data || typeof data !== "object") return false;
+    if (obj.widget === "poll") {
+      if (!Array.isArray(data.options) || data.options.length < 2 || data.options.length > 8) return false;
+      return data.options.every((o: any) =>
+        o && typeof o.label === "string" && o.label.trim().length > 0 && o.label.length <= 60 &&
+        typeof o.votes === "number" && o.votes >= 0);
+    }
+    if (!Array.isArray(data.items) || data.items.length < 2 || data.items.length > 8) return false;
+    return data.items.every((it: any) =>
+      it && typeof it.text === "string" && it.text.trim().length > 0 && it.text.length <= 60 &&
+      typeof it.done === "boolean");
   }
-  if (!Array.isArray(data.items) || data.items.length < 2 || data.items.length > 8) return false;
-  return data.items.every((it: any) =>
-    it && typeof it.text === "string" && it.text.trim().length > 0 && it.text.length <= 60 &&
-    typeof it.done === "boolean");
+  // Custom mini-app widget: kind must be an active type, data is free-form.
+  if (typeof obj.widget !== "string" || !activeWidgets.has(obj.widget)) return false;
+  if (typeof obj.text !== "string" || obj.text.length > 120) return false;
+  return isPlainData(obj.data) && dataSizeOk(obj.data);
 }
 
-function validOp(op: any): op is AgentOp {
+export interface ValidOpCtx {
+  objects?: Record<string, CanvasObj>;
+  activeWidgets?: Set<string>;
+}
+
+function validOp(op: any, ctx: ValidOpCtx = {}): op is AgentOp {
   if (!op || typeof op !== "object") return false;
   switch (op.kind) {
     case "add":
       return !!op.obj && typeof op.obj.id === "string" &&
         ["sticky", "stroke", "label", "widget"].includes(op.obj.type) &&
-        (op.obj.type !== "widget" || validWidget(op.obj));
+        (op.obj.type !== "widget" || validWidget(op.obj, ctx.activeWidgets ?? new Set()));
     case "move":
       return typeof op.id === "string" && Number.isFinite(op.x) && Number.isFinite(op.y);
-    case "edit":
-      return typeof op.id === "string" && !!op.patch && typeof op.patch === "object";
+    case "edit": {
+      if (typeof op.id !== "string" || !op.patch || typeof op.patch !== "object") return false;
+      const d = op.patch.data;
+      if (d !== undefined) {
+        // Custom-widget state replacement: plain object, size-capped.
+        if (!isPlainData(d) || !dataSizeOk(d)) return false;
+        if (ctx.objects) {
+          const target = ctx.objects[op.id];
+          if (!target || target.type !== "widget") return false;
+          if (target.widget === "poll" || target.widget === "checklist") return false;
+        }
+      }
+      return true;
+    }
     case "del":
       return typeof op.id === "string";
     case "vote":
@@ -259,6 +406,76 @@ const server = Bun.serve({
       return Response.json({ ok: true, configured: !!v, masked: v ? maskedKey(id) : "" });
     }
 
+    // --- widget types (custom mini apps) ---
+    m = url.pathname.match(/^\/api\/parties\/([a-z0-9]+)\/widget-types$/);
+    if (m && req.method === "GET") {
+      if (!getParty(m[1])) return Response.json({ error: "unknown party" }, { status: 404 });
+      return Response.json({ types: getWidgetTypes(m[1]) });
+    }
+    if (m && req.method === "POST") {
+      if (!getParty(m[1])) return Response.json({ error: "unknown party" }, { status: 404 });
+      let body: any = {};
+      try { body = await req.json(); } catch {}
+      const name = (body.name || "").toString().toLowerCase().trim();
+      const nameErr = validateWidgetName(name);
+      if (nameErr) return Response.json({ error: nameErr }, { status: 400 });
+      if (getWidgetType(m[1], name)) return Response.json({ error: `widget type "${name}" already exists` }, { status: 409 });
+      const seed = scaffoldWidgetType(name, (body.description || "").toString(), (body.by || "").toString().slice(0, 40));
+      const spec: WidgetTypeSpec = {
+        ...seed,
+        title: (body.title || "").toString().slice(0, 60).trim() || seed.title,
+        fields: Array.isArray(body.fields) ? body.fields : [],
+        example: body.example !== undefined ? body.example : seed.example,
+        style: typeof body.style === "string" ? body.style : seed.style,
+        script: typeof body.script === "string" ? body.script : seed.script,
+        height: Number.isInteger(body.height) ? body.height : seed.height,
+      };
+      const err = saveWidgetType(m[1], spec);
+      if (err) return Response.json({ error: err }, { status: 400 });
+      return Response.json({ ok: true, type: getWidgetType(m[1], name) }, { status: 201 });
+    }
+    m = url.pathname.match(/^\/api\/parties\/([a-z0-9]+)\/widget-types\/([a-z0-9-]+)$/);
+    if (m && req.method === "PUT") {
+      if (!getParty(m[1])) return Response.json({ error: "unknown party" }, { status: 404 });
+      const cur = getWidgetType(m[1], m[2]);
+      if (!cur) return Response.json({ error: "unknown widget type" }, { status: 404 });
+      if (cur.status !== "draft") return Response.json({ error: "unpublish before editing" }, { status: 409 });
+      let body: any = {};
+      try { body = await req.json(); } catch {}
+      const next: WidgetTypeSpec = {
+        ...cur,
+        title: typeof body.title === "string" ? body.title : cur.title,
+        description: typeof body.description === "string" ? body.description : cur.description,
+        fields: Array.isArray(body.fields) ? body.fields : cur.fields,
+        example: body.example !== undefined ? body.example : cur.example,
+        style: typeof body.style === "string" ? body.style : cur.style,
+        script: typeof body.script === "string" ? body.script : cur.script,
+        height: Number.isInteger(body.height) ? body.height : cur.height,
+        version: cur.version + 1,
+        updated_at: Date.now(),
+      };
+      const err = saveWidgetType(m[1], next);
+      if (err) return Response.json({ error: err }, { status: 400 });
+      return Response.json({ ok: true, type: getWidgetType(m[1], m[2]) });
+    }
+    if (m && req.method === "DELETE") {
+      if (!getParty(m[1])) return Response.json({ error: "unknown party" }, { status: 404 });
+      if (!getWidgetType(m[1], m[2])) return Response.json({ error: "unknown widget type" }, { status: 404 });
+      const objs = boardObjects(m[1]);
+      const used = Object.values(objs).some((o) => o.type === "widget" && o.widget === m[2]);
+      if (used) return Response.json({ error: "widget type is on the board — delete those widgets first" }, { status: 409 });
+      db.query("DELETE FROM widget_types WHERE party=? AND name=?").run(m[1], m[2]);
+      broadcast(m[1], { t: "widget-types", types: getWidgetTypes(m[1]) });
+      return Response.json({ ok: true });
+    }
+    m = url.pathname.match(/^\/api\/parties\/([a-z0-9]+)\/widget-types\/([a-z0-9-]+)\/(publish|unpublish)$/);
+    if (m && req.method === "POST") {
+      if (!getParty(m[1])) return Response.json({ error: "unknown party" }, { status: 404 });
+      const err = setWidgetTypeStatus(m[1], m[2], m[3] === "publish" ? "active" : "draft");
+      if (err) return Response.json({ error: err }, { status: 400 });
+      return Response.json({ ok: true, type: getWidgetType(m[1], m[2]) });
+    }
+
     // --- SPA ---
     if (url.pathname === "/" || url.pathname.startsWith("/p/")) {
       return new Response(Bun.file(ROOT + "public/index.html"), {
@@ -302,6 +519,7 @@ const server = Bun.serve({
           canvas: ops,
           chat: chatRows.reverse().map((r) => ({ from: r.from_id, name: r.from_name, text: r.text, ts: r.ts })),
           timer: timers.get(code) ?? null,
+          widgetTypes: getWidgetTypes(code),
         }));
         broadcast(code, { t: "peer-join", id: c.id, name: c.name, color: c.color }, c);
         return;
@@ -323,7 +541,7 @@ const server = Bun.serve({
           break;
         }
         case "op": {
-          if (!validOp(msg.op)) {
+          if (!validOp(msg.op, { objects: boardObjects(code), activeWidgets: activeWidgetNames(code) })) {
             ws.send(JSON.stringify({ t: "error", message: "invalid op" }));
             break;
           }

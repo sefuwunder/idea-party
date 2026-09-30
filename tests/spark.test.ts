@@ -65,12 +65,34 @@ function harness(opts: { key?: string; fetchImpl?: any } = {}): Harness {
       h.chats.push({ fromId, fromName, text });
     },
     fetchImpl: opts.fetchImpl ?? (async () => { throw new Error("fetch should not be called"); }),
+    widgetTypes: () => (h as any).wtypes ?? [],
+    saveWidgetType: (t: any) => { ((h as any).wtypes ??= []).push(t); return null; },
+    updateWidgetType: (name: string, patch: any) => {
+      const w = ((h as any).wtypes ?? []).find((x: any) => x.name === name);
+      if (!w) return `No widget type "${name}".`;
+      Object.assign(w, patch);
+      return null;
+    },
+    setWidgetTypeStatus: (name: string, status: string) => {
+      const w = ((h as any).wtypes ?? []).find((x: any) => x.name === name);
+      if (!w) return `No widget type "${name}".`;
+      w.status = status;
+      return null;
+    },
   };
   return h;
 }
 
 function modelReply(message: any): any {
   return async (url: string, init: any) => {
+    return new Response(JSON.stringify({ choices: [{ message }] }), { status: 200 });
+  };
+}
+
+function modelReplySequence(messages: any[]): any {
+  let i = 0;
+  return async (url: string, init: any) => {
+    const message = messages[Math.min(i++, messages.length - 1)];
     return new Response(JSON.stringify({ choices: [{ message }] }), { status: 200 });
   };
 }
@@ -362,5 +384,130 @@ describe("spark widget tools", () => {
     expect(ctx).toContain('2. "Sushi" — 0 votes');
     expect(ctx).toContain("[ ] Chairs");
     expect(ctx).toContain("[x] Snacks");
+  });
+});
+
+describe("spark widget-type tools", () => {
+  const sbType = (over: any = {}) => ({
+    name: "scoreboard", title: "Scoreboard", description: "two teams",
+    status: "active", fields: [{ key: "teamA", label: "Team A" }],
+    example: { teamA: "Home", scoreA: 0 },
+    style: "", script: "function render(state){return 'x';}", height: 220,
+    version: 1, created_by: "Ada", updated_at: 1, ...over,
+  });
+
+  test("propose_widget returns a draft spec action", () => {
+    const r = toolCallToOps(
+      tc("propose_widget", {
+        name: "dice", description: "roll a die",
+        script: "function render(state){return '<button>'+state.n+'</button>';}",
+      }),
+      board(), []
+    );
+    expect(r.ops).toHaveLength(0);
+    expect(r.widgetAction?.kind).toBe("propose");
+    expect(r.widgetAction?.spec?.name).toBe("dice");
+    expect(r.widgetAction?.spec?.status).toBe("draft");
+    expect(r.result).toMatch(/Drafted/);
+  });
+
+  test("propose_widget validates name and script", () => {
+    const bad = toolCallToOps(tc("propose_widget", { name: "Bad Name!", description: "x" }), board(), []);
+    expect(bad.widgetAction).toBeUndefined();
+    expect(bad.result).toMatch(/Error/);
+    const noRender = toolCallToOps(
+      tc("propose_widget", { name: "dice", description: "x", script: "var x=1;" }), board(), []);
+    expect(noRender.result).toMatch(/render/);
+  });
+
+  test("refine_widget / publish_widget / unpublish_widget actions", () => {
+    const ref = toolCallToOps(tc("refine_widget", { name: "dice", script: "function render(state){return 'y';}" }), board(), []);
+    expect(ref.widgetAction).toMatchObject({ kind: "refine", name: "dice" });
+    expect((ref.widgetAction?.patch as any)?.script).toContain("return 'y'");
+    const pub = toolCallToOps(tc("publish_widget", { name: "dice" }), board(), []);
+    expect(pub.widgetAction).toMatchObject({ kind: "publish", name: "dice", status: "active" });
+    const unp = toolCallToOps(tc("unpublish_widget", { name: "dice" }), board(), []);
+    expect(unp.widgetAction).toMatchObject({ kind: "unpublish", status: "draft" });
+  });
+
+  test("create_widget with a custom type compiles to add-widget grammar", () => {
+    const r = toolCallToOps(
+      tc("create_widget", { kind: "scoreboard", title: "Finals", items: ["Lions"] }),
+      board(), [sbType()]
+    );
+    expect(r.ops).toHaveLength(1);
+    const obj = (r.ops[0] as any).obj;
+    expect(obj.widget).toBe("scoreboard");
+    expect(obj.text).toBe("Finals");
+    expect(obj.data.teamA).toBe("Lions");
+  });
+
+  test("create_widget rejects unknown and draft custom types", () => {
+    expect(toolCallToOps(tc("create_widget", { kind: "nope", title: "T" }), board(), []).result).toMatch(/unknown widget type/);
+    expect(toolCallToOps(tc("create_widget", { kind: "scoreboard", title: "T" }), board(), [sbType({ status: "draft" })]).result)
+      .toMatch(/still a draft/);
+  });
+
+  test("update_widget replaces custom widget data", () => {
+    const objs: Record<string, CanvasObj> = {
+      w1: { id: "w1", type: "widget", widget: "scoreboard", x: 0, y: 0, text: "Finals", data: { scoreA: 0 } },
+    };
+    const r = toolCallToOps(tc("update_widget", { query: "Finals", data: { scoreA: 7 } }), objs, []);
+    expect(r.ops).toEqual([{ kind: "edit", id: "w1", patch: { data: { scoreA: 7 } } }]);
+  });
+
+  test("update_widget rejects polls and bad data", () => {
+    const objs: Record<string, CanvasObj> = {
+      w1: {
+        id: "w1", type: "widget", widget: "poll", x: 0, y: 0, text: "Lunch?",
+        data: { options: [{ label: "Pizza", votes: 2 }, { label: "Sushi", votes: 0 }] },
+      },
+    };
+    expect(toolCallToOps(tc("update_widget", { query: "Lunch", data: { x: 1 } }), objs, []).result).toMatch(/not a custom widget/);
+    expect(toolCallToOps(tc("update_widget", { query: "nope", data: { x: 1 } }), objs, []).result).toMatch(/Couldn't find/);
+    const w1: Record<string, CanvasObj> = {
+      w1: { id: "w1", type: "widget", widget: "scoreboard", x: 0, y: 0, text: "S", data: {} },
+    };
+    expect(toolCallToOps(tc("update_widget", { query: "S", data: [1] }), w1, []).result).toMatch(/plain object/);
+  });
+
+  test("list_widgets compiles to the widgets grammar", () => {
+    const r = toolCallToOps(tc("list_widgets", {}), board(), [sbType()]);
+    expect(r.result).toContain("scoreboard");
+  });
+
+  test("board summary shows custom widget data", () => {
+    const h = harness();
+    h.objects.w9 = { id: "w9", type: "widget", widget: "scoreboard", x: 0, y: 0, text: "Finals", data: { scoreA: 3 } };
+    const ctx = buildContextBlock(h.deps);
+    expect(ctx).toContain("widget scoreboard");
+    expect(ctx).toContain('"scoreA":3');
+  });
+
+  test("runSparkTurn applies widget actions through deps", async () => {
+    const reply = { role: "assistant", content: null, tool_calls: [
+      { id: "c1", type: "function", function: { name: "propose_widget", arguments: JSON.stringify({
+        name: "dice", description: "roll a die",
+        script: "function render(state){return 'd';}",
+      }) } },
+    ] };
+    const follow = { role: "assistant", content: "Drafted it — preview in the Lab!" };
+    const calls: any[] = [];
+    const h = harness({
+      fetchImpl: async (url: string, init: any) => {
+        calls.push({ url, init: JSON.parse(init.body) });
+        const message = [reply, follow][Math.min(calls.length - 1, 1)];
+        return new Response(JSON.stringify({ choices: [{ message }] }), { status: 200 });
+      },
+    });
+    await runSparkTurn("code1", "@spark make a dice widget", "Ada", h.deps);
+    const saved = (h as any).wtypes.find((t: any) => t.name === "dice");
+    expect(saved).toBeTruthy();
+    expect(saved.status).toBe("draft");
+    const toolMsg = calls[1].init.messages.find((m: any) => m.role === "tool");
+    expect(toolMsg.content).toMatch(/Drafted/);
+    expect(h.chats).toHaveLength(1);
+    expect(h.chats[0].text).toContain("Drafted it");
+    _resetBusyForTests();
   });
 });

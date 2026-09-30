@@ -57,6 +57,18 @@ curl -X POST http://localhost:3011/api/parties/<code>/agent \
 
 The agent's replies and board edits arrive as ordinary chat messages and canvas ops, so remote participants watch it work in real time.
 
+## 🧪 Widget Lab — custom widget types (mini apps)
+
+Beyond the built-in poll and checklist, the party can invent its own widget types — scoreboards, dice rollers, countdown cards, whatever the night needs. The three of you build them together:
+
+- **You** describe what you want, preview drafts live, hand-edit the code, and publish.
+- **The agent** scaffolds: `agent build widget scoreboard "two teams, +1 buttons"` → a working draft appears in the Lab. `agent widgets` lists types; `agent publish widget scoreboard` makes it live; `agent add widget scoreboard Finals | Lions | Tigers` puts one on the board.
+- **@spark** writes the code: ask it to design a widget and it drafts, refines, and publishes through its widget tools.
+
+Open the 🧪 Widget Lab (top bar) to browse live types and drafts, edit code with a live preview, and publish. Widget code is plain JS — `render(state)` returns HTML, `bind(root, api)` wires up taps, `api.setState(newData)` saves and broadcasts to everyone.
+
+Trust model: widget code runs sandboxed in every participant's browser (no network access — it can only talk back to the board), so publish types from people you trust.
+
 ## ✨ Spark (Muse Spark participant)
 
 Mention `@spark` in chat and Muse Spark joins the party — it converses with everyone and programs the board through the same deterministic grammar as the party agent (add/move/edit/delete stickies and labels, arrange, cluster, votes, timers, poll and checklist widgets). It can't wipe the board: there is deliberately no clear tool.

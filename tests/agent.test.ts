@@ -204,7 +204,7 @@ describe("widgets", () => {
     expect(parseAgentCommand("add widget poll Lonely?", {}).ops).toHaveLength(0);
     expect(parseAgentCommand("add widget poll Q? | only-one", {}).reply).toMatch(/at least 2/);
     expect(parseAgentCommand("add widget poll Q? | " + Array(9).fill("x").join(" | "), {}).reply).toMatch(/8 entries max/);
-    expect(parseAgentCommand("add widget poll", {}).reply).toMatch(/didn't understand/);
+    expect(parseAgentCommand("add widget poll", {}).reply).toMatch(/Usage:/);
   });
 
   test("add widget supports at x,y", () => {
@@ -266,5 +266,79 @@ describe("widgets", () => {
     expect(findMatch("lunch", objs)!.id).toBe("w9");
     const r = parseAgentCommand("agent: delete lunch plans?", objs);
     expect(r.ops[0]).toMatchObject({ kind: "del", id: "w9" });
+  });
+});
+
+describe("widget types (mini apps)", () => {
+  const sb = {
+    name: "scoreboard", title: "Scoreboard", description: "two teams",
+    status: "active" as const, fields: [{ key: "teamA", label: "Team A" }, { key: "teamB", label: "Team B" }],
+    example: { teamA: "Home", teamB: "Away", scoreA: 0, scoreB: 0 },
+    style: "", script: "function render(state){return 'x';}", height: 220,
+    version: 1, created_by: "Ada", updated_at: 1,
+  };
+  const draft = { ...sb, name: "idea-vault", title: "Idea Vault", status: "draft" as const };
+
+  test("build widget scaffolds a draft action", () => {
+    const r = parseAgentCommand('agent: build widget scoreboard "two teams, +1 buttons"', {}, []);
+    expect(r.ops).toHaveLength(0);
+    expect(r.widgetType).toMatchObject({ action: "propose", name: "scoreboard" });
+    expect(r.widgetType!.description).toContain("two teams");
+    expect(r.reply).toMatch(/Scaffold/);
+  });
+
+  test("build widget validates name and duplicates", () => {
+    expect(parseAgentCommand("agent: build widget Poll x", {}, []).widgetType).toBeUndefined();
+    expect(parseAgentCommand("agent: build widget Poll x", {}, []).reply).toMatch(/Can't use that name/);
+    const dup = parseAgentCommand("agent: build widget scoreboard x", {}, [sb]);
+    expect(dup.widgetType).toBeUndefined();
+    expect(dup.reply).toMatch(/already/);
+  });
+
+  test("widgets lists active and drafts", () => {
+    const r = parseAgentCommand("agent: widgets", {}, [sb, draft]);
+    expect(r.reply).toContain("scoreboard");
+    expect(r.reply).toContain("[active]");
+    expect(r.reply).toContain("idea-vault");
+    expect(r.reply).toContain("[draft]");
+    const empty = parseAgentCommand("agent: widgets", {}, []);
+    expect(empty.reply).toMatch(/No custom widget types/);
+  });
+
+  test("publish / unpublish widget actions", () => {
+    expect(parseAgentCommand("agent: publish widget idea-vault", {}, [sb, draft]).widgetType)
+      .toMatchObject({ action: "publish", name: "idea-vault" });
+    expect(parseAgentCommand("agent: publish widget scoreboard", {}, [sb]).reply).toMatch(/already live/);
+    expect(parseAgentCommand("agent: unpublish widget scoreboard", {}, [sb]).widgetType)
+      .toMatchObject({ action: "unpublish", name: "scoreboard" });
+    expect(parseAgentCommand("agent: publish widget nope", {}, []).reply).toMatch(/No widget type/);
+  });
+
+  test("add widget <custom> maps values onto fields", () => {
+    const r = parseAgentCommand("agent: add widget scoreboard Finals | Lions | Tigers", {}, [sb]);
+    expect(r.ops).toHaveLength(1);
+    const obj = (r.ops[0] as any).obj;
+    expect(obj.type).toBe("widget");
+    expect(obj.widget).toBe("scoreboard");
+    expect(obj.text).toBe("Finals");
+    expect(obj.data.teamA).toBe("Lions");
+    expect(obj.data.teamB).toBe("Tigers");
+    expect(obj.data.scoreA).toBe(0); // example defaults kept
+  });
+
+  test("add widget rejects unknown and draft types", () => {
+    expect(parseAgentCommand("agent: add widget nope T", {}, [sb]).reply).toMatch(/No widget type/);
+    expect(parseAgentCommand("agent: add widget idea-vault T", {}, [sb, draft]).reply).toMatch(/still a draft/);
+  });
+
+  test("edit op with data folds for custom widgets only", () => {
+    const objs = foldOps([
+      { kind: "add", obj: { id: "w1", type: "widget", widget: "scoreboard", x: 0, y: 0, text: "S", data: { scoreA: 0 } } },
+      { kind: "add", obj: { id: "w2", type: "widget", widget: "poll", x: 0, y: 0, text: "P", data: { options: [{ label: "a", votes: 0 }, { label: "b", votes: 0 }] } } },
+    ]);
+    applyOp(objs, { kind: "edit", id: "w1", patch: { data: { scoreA: 5 } } });
+    expect(objs.w1.data).toEqual({ scoreA: 5 });
+    applyOp(objs, { kind: "edit", id: "w2", patch: { data: { hacked: true } } });
+    expect((objs.w2.data as any).hacked).toBeUndefined();
   });
 });

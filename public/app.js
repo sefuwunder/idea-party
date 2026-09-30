@@ -36,6 +36,7 @@ const S = {
   camOn: true,
   unread: 0,
   cursors: new Map(), // peerId -> el
+  widgetTypes: {}, // name -> WidgetTypeSpec (custom mini apps)
 };
 
 const PALETTE = ["yellow", "pink", "blue", "green", "purple", "orange"];
@@ -181,6 +182,7 @@ function handleMsg(m) {
     case "welcome":
       S.me.id = m.id; S.me.color = m.color;
       for (const p of m.peers) addPeer(p.id, p.name, p.color);
+      setWidgetTypes(m.widgetTypes || []);
       for (const { seq, op } of m.canvas) applyOp(seq, op, "history");
       for (const c of m.chat) addChat(c);
       if (m.timer) showTimer(m.timer.endsAt);
@@ -210,6 +212,9 @@ function handleMsg(m) {
       break;
     case "timer":
       showTimer(m.endsAt);
+      break;
+    case "widget-types":
+      setWidgetTypes(m.types || []);
       break;
     case "pong":
       break; // heartbeat reply; the ping itself is what keeps the socket alive
@@ -281,6 +286,18 @@ function applyOp(seq, op, from) {
       if (o) {
         if (op.patch.text !== undefined) o.text = op.patch.text;
         if (op.patch.color !== undefined) o.color = op.patch.color;
+        if (op.patch.data !== undefined && o.type === "widget" &&
+            o.widget !== "poll" && o.widget !== "checklist") {
+          o.data = op.patch.data;
+          // Push state into the live iframe instead of rebuilding it.
+          const frames = document.querySelectorAll("iframe.wcustom");
+          for (const f of frames) {
+            if (f.dataset.wid === op.id && f.contentWindow) {
+              f.contentWindow.postMessage({ t: "ip-widget-state", id: op.id, data: o.data }, "*");
+              return;
+            }
+          }
+        }
         renderObj(op.id);
       }
       break;
@@ -361,6 +378,10 @@ function renderObj(id) {
 }
 
 function renderWidget(elx, id, o) {
+  if (o.widget && o.widget !== "poll" && o.widget !== "checklist") {
+    renderCustomWidget(elx, id, o);
+    return;
+  }
   elx.className = "widget " + (o.widget || "poll") + (S.selected === id ? " selected" : "");
   const title = `<div class="w-title">${esc(o.text || "")}</div>`;
   if (o.widget === "checklist") {
@@ -401,6 +422,62 @@ function renderWidget(elx, id, o) {
   const ttl = elx.querySelector(".w-title");
   ttl.addEventListener("dblclick", (e) => { e.stopPropagation(); editText(id, ttl); });
 }
+
+/* ================= custom widget types (mini apps) ================= */
+
+function setWidgetTypes(types) {
+  S.widgetTypes = {};
+  for (const t of types) S.widgetTypes[t.name] = t;
+  // Re-render custom widgets — their code may have changed.
+  for (const id of Object.keys(S.objects)) {
+    const o = S.objects[id];
+    if (o.type === "widget" && o.widget !== "poll" && o.widget !== "checklist") renderObj(id);
+  }
+  if (!$("#lab-modal").classList.contains("hidden")) refreshLab();
+}
+
+/** Render a custom mini-app widget inside a sandboxed iframe. */
+function renderCustomWidget(elx, id, o) {
+  const type = S.widgetTypes[o.widget];
+  elx.className = "widget wcustom-wrap" + (S.selected === id ? " selected" : "");
+  elx.innerHTML = `<div class="w-title">${esc(o.text || "")}</div>` +
+    `<div class="w-kind">🧩 ${esc(type ? type.title : o.widget)}${type ? "" : " · unknown type"}</div>`;
+  const ttl = elx.querySelector(".w-title");
+  ttl.addEventListener("dblclick", (e) => { e.stopPropagation(); editText(id, ttl); });
+  if (!type || typeof WidgetLib === "undefined") return;
+  const f = document.createElement("iframe");
+  f.className = "wcustom";
+  f.dataset.wid = id;
+  f.setAttribute("sandbox", "allow-scripts");
+  f.setAttribute("title", type.title);
+  f.style.height = (type.height || 240) + "px";
+  f.srcdoc = WidgetLib.buildWidgetSrcdoc(type, id, o.data || {});
+  // Clicks inside the iframe shouldn't start a board drag.
+  f.addEventListener("pointerdown", (e) => e.stopPropagation());
+  elx.appendChild(f);
+}
+
+/** Bridge: sandboxed widget iframes talk to the board via postMessage. */
+window.addEventListener("message", (e) => {
+  const d = e.data;
+  if (!d || typeof d !== "object") return;
+  const frames = document.querySelectorAll("iframe.wcustom");
+  let src = null;
+  for (const f of frames) if (f.contentWindow === e.source) { src = f; break; }
+  if (!src) return;
+  const wid = src.dataset.wid;
+  if (d.t === "ip-widget-set" && wid && S.objects[wid]) {
+    const data = d.data;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      try {
+        if (JSON.stringify(data).length <= 16384)
+          send({ t: "op", op: { kind: "edit", id: wid, patch: { data } } });
+      } catch {}
+    }
+  } else if (d.t === "ip-widget-resize" && Number.isFinite(d.height)) {
+    src.style.height = Math.max(120, Math.min(800, d.height)) + "px";
+  }
+});
 
 function renderStroke(o) {
   const NS = "http://www.w3.org/2000/svg";
@@ -699,6 +776,167 @@ async function loadKeys() {
   }
 }
 
+/* ================= widget lab ================= */
+
+const labApi = (p, opts) => fetch(`/api/parties/${S.code}/widget-types${p || ""}`, opts);
+
+function toggleLab(open) {
+  const m = $("#lab-modal");
+  const willOpen = open === undefined ? m.classList.contains("hidden") : open;
+  m.classList.toggle("hidden", !willOpen);
+  if (willOpen) refreshLab();
+}
+
+/** Rebuild the Lab lists from the registry. */
+function refreshLab() {
+  const body = $("#lab-body");
+  const types = Object.values(S.widgetTypes).sort((a, b) => (a.name < b.name ? -1 : 1));
+  const active = types.filter((t) => t.status === "active");
+  const drafts = types.filter((t) => t.status !== "active");
+  const card = (t, isDraft) => `
+    <div class="lab-type">
+      <div class="lab-type-head">
+        <b>${esc(t.title)}</b>
+        <code>${esc(t.name)}</code>
+        <span class="lab-status ${t.status}">${t.status}</span>
+      </div>
+      <div class="lab-desc">${esc(t.description || "")}</div>
+      <div class="lab-meta">v${t.version}${t.created_by ? ` · by ${esc(t.created_by)}` : ""}${t.fields?.length ? ` · fields: ${t.fields.map((f) => esc(f.key)).join(", ")}` : ""}</div>
+      <div class="lab-actions">
+        ${isDraft ? `<button data-act="edit">Edit</button><button data-act="publish" class="primary">Publish</button>`
+                   : `<input data-role="title" placeholder="Widget title…" maxlength="120"><button data-act="add" class="primary">Add to board</button>
+                      <button data-act="unpublish">Unpublish</button>`}
+        <button data-act="del" class="danger">Delete</button>
+      </div>
+    </div>`;
+  body.innerHTML = `
+    <div class="lab-intro">Design mini apps with the party: the <b>agent</b> scaffolds
+      (<code>agent build widget &lt;name&gt; "&lt;desc&gt;"</code>), <b>@spark</b> writes the code,
+      you preview and publish here.</div>
+    <div class="lab-row"><h3>Live (${active.length})</h3><button id="lab-new" class="primary">＋ New type</button></div>
+    <div id="lab-active">${active.map((t) => card(t, false)).join("") || `<p class="fine">Nothing live yet.</p>`}</div>
+    <h3>Drafts (${drafts.length})</h3>
+    <div id="lab-drafts">${drafts.map((t) => card(t, true)).join("") || `<p class="fine">No drafts. Scaffold one with the agent or ＋ New.</p>`}</div>
+    <p class="fine">Widget code runs sandboxed in every browser here — publish types from people you trust.</p>`;
+  $("#lab-new").addEventListener("click", () => openLabEditor(null));
+  body.querySelectorAll(".lab-type").forEach((el) => {
+    const name = el.querySelector("code").textContent;
+    el.querySelectorAll("button").forEach((b) => {
+      b.addEventListener("click", () => labAction(name, b.dataset.act, el));
+    });
+  });
+}
+
+async function labAction(name, act, el) {
+  if (act === "edit") { openLabEditor(name); return; }
+  if (act === "add") {
+    const title = (el.querySelector('[data-role="title"]').value || "").trim() || name;
+    const r = await fetch(`/api/parties/${S.code}/agent`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: `add widget ${name} ${title}` }),
+    });
+    if (r.ok) toggleLab(false);
+    return;
+  }
+  if (act === "publish" || act === "unpublish") {
+    const r = await labApi(`/${name}/${act}`, { method: "POST" });
+    if (!r.ok) alert("Couldn't " + act + ": " + (await r.text()).slice(0, 120));
+    return;
+  }
+  if (act === "del") {
+    if (!confirm(`Delete widget type "${name}"?`)) return;
+    const r = await labApi(`/${name}`, { method: "DELETE" });
+    if (!r.ok) alert("Couldn't delete: " + (await r.text()).slice(0, 160));
+    return;
+  }
+}
+
+/** Open the draft editor (new or existing). */
+function openLabEditor(name) {
+  const t = name ? S.widgetTypes[name] : null;
+  const body = $("#lab-body");
+  body.innerHTML = `
+    <button id="lab-back">← All types</button>
+    <h3>${t ? `Edit <code>${esc(t.name)}</code>` : "New widget type"}</h3>
+    <div id="lab-err" class="lab-err hidden"></div>
+    ${t ? "" : `<label>Name (slug)<input id="lab-name" placeholder="scoreboard" maxlength="24"></label>`}
+    <label>Title<input id="lab-title" value="${esc(t?.title || "")}" maxlength="60"></label>
+    <label>Description<input id="lab-desc" value="${esc(t?.description || "")}" maxlength="500"></label>
+    <div class="lab-grid2">
+      <label>Height (px)<input id="lab-height" type="number" value="${t?.height || 220}" min="120" max="800"></label>
+      <label>Fields (JSON)<input id="lab-fields" value='${esc(JSON.stringify(t?.fields || []))}' spellcheck="false"></label>
+    </div>
+    <label>Example data (JSON)<textarea id="lab-example" rows="3" spellcheck="false">${esc(JSON.stringify(t?.example ?? { count: 0 }, null, 1))}</textarea></label>
+    <label>Style (CSS)<textarea id="lab-style" rows="5" spellcheck="false">${esc(t?.style || "")}</textarea></label>
+    <label>Script (JS — define render(state), optional bind(root, api))<textarea id="lab-script" rows="14" spellcheck="false">${esc(t?.script || "")}</textarea></label>
+    <div class="lab-row">
+      <button id="lab-preview-btn">Refresh preview</button>
+      ${t ? `<button id="lab-save" class="primary">Save draft</button>
+             <button id="lab-pub" class="primary">Save & publish</button>
+             <button id="lab-del" class="danger">Delete</button>` : `<button id="lab-create" class="primary">Create draft</button>`}
+    </div>
+    <h4>Preview</h4>
+    <div class="lab-preview"><iframe id="lab-frame" sandbox="allow-scripts" title="widget preview"></iframe></div>`;
+  $("#lab-back").addEventListener("click", refreshLab);
+  const showErr = (msg) => { const e = $("#lab-err"); e.textContent = msg; e.classList.remove("hidden"); };
+  const readForm = () => {
+    let fields, example;
+    try { fields = JSON.parse($("#lab-fields").value || "[]"); }
+    catch { throw new Error("Fields isn't valid JSON."); }
+    try { example = JSON.parse($("#lab-example").value || "{}"); }
+    catch { throw new Error("Example data isn't valid JSON."); }
+    return {
+      title: $("#lab-title").value,
+      description: $("#lab-desc").value,
+      fields, example,
+      style: $("#lab-style").value,
+      script: $("#lab-script").value,
+      height: +$("#lab-height").value || 220,
+    };
+  };
+  const doPreview = () => {
+    try {
+      const f = readForm();
+      const fr = $("#lab-frame");
+      fr.style.height = Math.max(120, Math.min(800, f.height)) + "px";
+      fr.srcdoc = WidgetLib.buildWidgetSrcdoc(f, "preview", f.example);
+    } catch (err) { showErr(err.message); }
+  };
+  $("#lab-preview-btn").addEventListener("click", doPreview);
+  setTimeout(doPreview, 50);
+  const saveDraft = async (publish) => {
+    let f;
+    try { f = readForm(); } catch (err) { showErr(err.message); return; }
+    const payload = { ...f, by: S.me.name };
+    let r;
+    if (!t) {
+      payload.name = $("#lab-name").value.trim().toLowerCase();
+      r = await labApi("", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    } else {
+      r = await labApi(`/${t.name}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+    }
+    if (!r.ok) { showErr("Save failed: " + (await r.text()).slice(0, 200)); return; }
+    const saved = (await r.json()).type;
+    if (publish) {
+      const rp = await labApi(`/${saved.name}/publish`, { method: "POST" });
+      if (!rp.ok) { showErr("Publish failed: " + (await rp.text()).slice(0, 200)); return; }
+    }
+    refreshLab();
+  };
+  if (t) {
+    $("#lab-save").addEventListener("click", () => saveDraft(false));
+    $("#lab-pub").addEventListener("click", () => saveDraft(true));
+    $("#lab-del").addEventListener("click", async () => {
+      if (!confirm(`Delete widget type "${t.name}"?`)) return;
+      const r = await labApi(`/${t.name}`, { method: "DELETE" });
+      if (!r.ok) showErr("Delete failed: " + (await r.text()).slice(0, 200));
+      else refreshLab();
+    });
+  } else {
+    $("#lab-create").addEventListener("click", () => saveDraft(false));
+  }
+}
+
 /* ================= agent panel ================= */
 const AGENT_HELP =
 `I program the board. Try:
@@ -706,6 +944,9 @@ const AGENT_HELP =
 • agent add label <text> [at 100,200]
 • agent add widget poll <question> | <opt1> | <opt2>
 • agent add widget checklist <title> | <item1> | <item2>
+• agent add widget <type> <title> [| values…]
+• agent build widget <name> "<description>"  (scaffold a mini app)
+• agent widgets · agent publish widget <name>
 • agent move <id or words> to <x>,<y>
 • agent delete <id or words> · agent color <id or words> <color>
 • agent arrange · agent cluster · agent count
@@ -937,6 +1178,9 @@ $("#agent-form").addEventListener("submit", (e) => {
 });
 
 $("#settings-btn").addEventListener("click", () => toggleSettings());
+$("#lab-btn").addEventListener("click", () => toggleLab());
+$("#lab-close").addEventListener("click", () => toggleLab(false));
+$("#lab-modal").addEventListener("click", (e) => { if (e.target.id === "lab-modal") toggleLab(false); });
 $("#settings-close").addEventListener("click", () => toggleSettings(false));
 $("#settings-modal").addEventListener("click", (e) => { if (e.target.id === "settings-modal") toggleSettings(false); });
 
@@ -973,7 +1217,7 @@ document.querySelector(".party-id").addEventListener("click", async () => {
 $("#leave-btn").addEventListener("click", () => { location.hash = "#/"; });
 
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { toggleAgent(false); toggleSettings(false); }
+  if (e.key === "Escape") { toggleAgent(false); toggleSettings(false); toggleLab(false); }
 });
 
 if (location.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) {

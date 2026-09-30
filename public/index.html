@@ -43,6 +43,7 @@
     <div class="top-actions">
       <button id="media-toggle" title="Camera & mic">🎙</button>
       <button id="agent-btn" title="Party agent">🤖</button>
+      <button id="lab-btn" title="Widget Lab">🧪</button>
       <button id="chat-toggle" title="Chat">💬<span id="chat-badge" class="hidden"></span></button>
       <button id="settings-btn" title="Settings">⚙️</button>
       <button id="leave-btn" title="Leave">✕</button>
@@ -106,8 +107,16 @@
       <p class="fine">Keys stay on this server and are never shown again after saving. You can also set them as environment variables.</p>
     </div>
   </div>
+
+  <div id="lab-modal" class="hidden">
+    <div class="lab-card">
+      <div class="chat-head">🧪 Widget Lab <button id="lab-close">✕</button></div>
+      <div id="lab-body"></div>
+    </div>
+  </div>
 </div>
 
+<script src="/widgets-lib.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
