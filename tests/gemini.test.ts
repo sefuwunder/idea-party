@@ -7,6 +7,7 @@ import {
   _resetGeminiBusyForTests,
   GEMINI_TOOLS,
   GEMINI_MODEL,
+  GEMINI_MODELS,
   GEMINI_API_URL,
   GEMINI_KEY_ID,
   GEMINI_KEY_DEF,
@@ -266,5 +267,48 @@ describe("runGeminiTurn", () => {
     expect(h.chats.length).toBe(1);
     expect(h.chats[0].text).toMatch(/snag/);
     expect(h.chats[0].text).not.toContain("test-gemini-key-123");
+  });
+
+  test("falls back to the next model on 429 high-demand", async () => {
+    const h = harness();
+    h.deps.fetchImpl = async (url: string, init: any) => {
+      h.requests.push({ url, init });
+      const model = JSON.parse(init.body).model;
+      if (model === GEMINI_MODEL) {
+        return new Response("This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.", { status: 429 });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: "Back on a quieter model!" } }] }), { status: 200 });
+    };
+    await runGeminiTurn("C1", "@gemini hi", "Ada", h.deps);
+    expect(h.requests.length).toBe(2);
+    expect(JSON.parse(h.requests[0].init.body).model).toBe("gemini-3.8-flash");
+    expect(JSON.parse(h.requests[1].init.body).model).toBe("gemini-3.7-flash");
+    expect(h.chats.length).toBe(1);
+    expect(h.chats[0].text).toBe("Back on a quieter model!");
+  });
+
+  test("does not fall back on 401 — auth errors fail fast", async () => {
+    const h = harness();
+    h.deps.fetchImpl = async (url: string, init: any) => {
+      h.requests.push({ url, init });
+      return new Response("bad key", { status: 401 });
+    };
+    await runGeminiTurn("C1", "@gemini hi", "Ada", h.deps);
+    expect(h.requests.length).toBe(1);
+    expect(h.chats.length).toBe(1);
+    expect(h.chats[0].text).toMatch(/gemini-3\.8-flash model answered 401/);
+  });
+
+  test("reports every attempt when all models are overloaded", async () => {
+    const h = harness();
+    h.deps.fetchImpl = async (url: string, init: any) => {
+      h.requests.push({ url, init });
+      return new Response("high demand", { status: 429 });
+    };
+    await runGeminiTurn("C1", "@gemini hi", "Ada", h.deps);
+    expect(h.requests.length).toBe(GEMINI_MODELS.length);
+    expect(h.chats.length).toBe(1);
+    expect(h.chats[0].text).toMatch(/tried gemini-3\.8-flash → gemini-2\.5-flash-lite \(9 models\)/);
+    expect(h.chats[0].text).toMatch(/last: the gemini-2\.5-flash-lite model answered 429/);
   });
 });

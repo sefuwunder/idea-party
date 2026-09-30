@@ -68,6 +68,12 @@ export interface ParticipantConfig {
   /** Mention detection, e.g. /^\s*@?spark(?:\s*[: ]|$)/i (no /g flag). */
   mentionRe: RegExp;
   model: string;
+  /**
+   * Fallback models, tried in order when an earlier model answers 429
+   * (rate limit / high demand) or 5xx. Network errors, timeouts, and 4xx
+   * other than 429 do NOT fall back — another model wouldn't help.
+   */
+  fallbackModels?: string[];
   apiUrl: string;
   keyId: string;
   keyDef: ParticipantKeyDef;
@@ -431,30 +437,46 @@ export function buildContextBlock(deps: ParticipantDeps): string {
 }
 
 async function callModel(config: ParticipantConfig, key: string, messages: any[], fetchImpl: typeof fetch): Promise<any> {
-  let res: Response;
-  try {
-    res = await fetchImpl(config.apiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        tools: PARTICIPANT_TOOLS,
-        tool_choice: "auto",
-        max_completion_tokens: 2048,
-      }),
-      signal: AbortSignal.timeout(45000),
-    });
-  } catch (err: any) {
-    if (err?.name === "TimeoutError" || err?.name === "AbortError")
-      throw new Error("timed out after 45s");
-    throw new Error("couldn't reach the model API");
-  }
-  if (!res.ok) {
+  const models = [config.model, ...(config.fallbackModels ?? [])];
+  const attempts: string[] = [];
+  for (const model of models) {
+    const last = model === models[models.length - 1];
+    let res: Response;
+    try {
+      res = await fetchImpl(config.apiUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + key },
+        body: JSON.stringify({
+          model,
+          messages,
+          tools: PARTICIPANT_TOOLS,
+          tool_choice: "auto",
+          max_completion_tokens: 2048,
+        }),
+        signal: AbortSignal.timeout(45000),
+      });
+    } catch (err: any) {
+      if (err?.name === "TimeoutError" || err?.name === "AbortError")
+        throw new Error("timed out after 45s");
+      throw new Error("couldn't reach the model API");
+    }
+    if (res.ok) return res.json();
     const body = await res.text().catch(() => "");
-    throw new Error(`the model API answered ${res.status}${body ? ": " + body.slice(0, 160) : ""}`);
+    attempts.push(`the ${model} model answered ${res.status}${body ? ": " + body.slice(0, 160) : ""}`);
+    // High demand / rate limit / server wobble: try the next model.
+    // Auth/config errors (401/403/404/400) fail fast — another model won't fix them.
+    const retryable = res.status === 429 || (res.status >= 500 && res.status < 600);
+    if (retryable && !last) continue;
+    // Final failure: keep it chat-readable (runTurn truncates to 200 chars).
+    if (attempts.length > 1) {
+      throw new Error(
+        `tried ${models[0]} → ${model} (${attempts.length} models), still failing — ` +
+        `last: the ${model} model answered ${res.status}${body ? ": " + body.slice(0, 100) : ""}`
+      );
+    }
+    throw new Error(attempts[0]);
   }
-  return res.json();
+  throw new Error("no models configured");
 }
 
 // ---------------------------------------------------------------------------

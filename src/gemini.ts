@@ -16,7 +16,18 @@ export type GeminiDeps = ParticipantDeps;
 export type { ChatMsg, ToolCall };
 export type GeminiWidgetAction = ParticipantWidgetAction;
 
-export const GEMINI_MODEL = "gemini-3.8-flash";
+export const GEMINI_MODELS = [
+  "gemini-3.8-flash", // primary
+  "gemini-3.7-flash",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-3-flash",
+  "gemini-2.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash-lite",
+];
+export const GEMINI_MODEL = GEMINI_MODELS[0];
 export const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
 export const GEMINI_KEY_ID = "GEMINI_API_KEY";
 
@@ -43,6 +54,8 @@ const gemini = makeParticipant({
   chatName: "✦ Gemini",
   mentionRe: /^\s*@?gemini(?:\s*[: ]|$)/i,
   model: GEMINI_MODEL,
+  // High demand on one model? Walk down the chain until one answers.
+  fallbackModels: GEMINI_MODELS.slice(1),
   apiUrl: GEMINI_API_URL,
   keyId: GEMINI_KEY_ID,
   keyDef: GEMINI_KEY_DEF,

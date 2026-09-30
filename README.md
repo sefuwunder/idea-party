@@ -98,6 +98,8 @@ Gemini needs a **Google Gemini API key** (model `gemini-3.8-flash` via Google's 
 
 Keys are stored on the server only and shown back masked. Without a key, `@gemini` just tells the room to add one.
 
+**Model fallback:** if `gemini-3.8-flash` answers 429 (high demand) or 5xx, Gemini automatically retries the next model down the chain — 3.7 → 3.6 → 3.5 → 3 Flash → 2.5 Flash → the Flash-Lite variants — until one answers. Auth errors (401/403) fail fast instead, since another model wouldn't fix them. If every model is busy, the room gets a short "tried X → Y (9 models), still failing" note.
+
 ```
 @gemini design a scoreboard widget for our game night
 ```
